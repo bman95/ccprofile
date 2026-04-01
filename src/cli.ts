@@ -3,6 +3,7 @@
 import { argv, exit, cwd } from "node:process";
 import { listProfiles, getProfile, saveProfile, deleteProfile, getActiveProfile } from "./profiles.js";
 import { applyProfile, resetProfile } from "./apply.js";
+import { runInit } from "./init.js";
 import type { Profile } from "./types.js";
 
 const args = argv.slice(2);
@@ -15,6 +16,7 @@ USAGE
   ccprofile <command> [options]
 
 COMMANDS
+  init                    Set up ccprofile (creates dirs, installs companion skill)
   use <name>              Activate a profile (applies plugins, skills, MCP changes)
   current                 Show the currently active profile
   list                    List all available profiles
@@ -69,6 +71,9 @@ async function main(): Promise<void> {
   const projectDir = projectFlag ? cwd() : undefined;
 
   switch (command) {
+    case "init":
+      await runInit();
+      break;
     case "use":
       await cmdUse(args[1], projectDir);
       break;

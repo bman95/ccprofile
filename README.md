@@ -14,7 +14,14 @@ Claude Code loads **all** registered skills, plugins, and MCP server definitions
 
 ```bash
 npm install -g ccprofile
+ccprofile init
 ```
+
+The `init` command:
+- Verifies Claude Code is installed
+- Creates `~/.claude/profiles/` and `~/.claude/skills-disabled/` directories
+- Installs a companion skill (`/profile-edit`) for AI-assisted profile editing
+- Scans your current skills and plugins and suggests profile groupings
 
 ## Quick start
 
@@ -44,6 +51,7 @@ ccprofile reset
 
 | Command | Description |
 |---------|-------------|
+| `ccprofile init` | Set up ccprofile (dirs, companion skill, environment scan) |
 | `ccprofile use <name>` | Activate a profile |
 | `ccprofile current` | Show active profile |
 | `ccprofile list` | List all profiles |
@@ -76,6 +84,10 @@ Use `--project` to apply changes to the current project's `.claude/settings.json
 ccprofile use docs --project
 ```
 
+### Companion skill
+
+After running `ccprofile init`, a `/profile-edit` slash command becomes available inside Claude Code. It is **non-auto-invocable** (zero token cost when idle) and only activates when you explicitly type `/profile-edit`. Use it when you want AI assistance to configure your profiles interactively.
+
 ## Important notes
 
 - **Changes require a Claude Code restart.** Skills and plugins are loaded at session start, not mid-session.
@@ -94,6 +106,8 @@ Since this is a CLI tool, you can run it directly from a Claude Code session wit
 ## Why not an AI skill?
 
 The whole point is to **save tokens**. Running profile management through AI would defeat the purpose. This tool runs entirely in your shell — zero API calls, zero token consumption.
+
+The optional `/profile-edit` companion skill exists only for when you want AI help editing profiles. It uses `disable-model-invocation: true`, so it costs zero tokens until you explicitly invoke it.
 
 ## License
 
