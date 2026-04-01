@@ -1,0 +1,43 @@
+{
+  "name": "ccprofile",
+  "version": "0.1.0",
+  "description": "Profile manager for Claude Code — toggle groups of skills, plugins, and MCP servers to optimize your context window",
+  "type": "module",
+  "bin": {
+    "ccprofile": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "claude-code",
+    "profile",
+    "skills",
+    "plugins",
+    "context-optimization",
+    "cli"
+  ],
+  "author": "Bryan Frías",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bman95/ccprofile.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "write-file-atomic": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}
