@@ -1,6 +1,6 @@
 {
   "name": "ccprofile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Profile manager for Claude Code — toggle groups of skills, plugins, and MCP servers to optimize your context window",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "npm run build && node --test test/*.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -10,6 +10,7 @@ export const paths = {
   skillsDir: join(CLAUDE_DIR, "skills"),
   skillsDisabledDir: join(CLAUDE_DIR, "skills-disabled"),
   activeProfileFile: join(CLAUDE_DIR, "profiles", ".active"),
+  baselineFile: join(CLAUDE_DIR, "profiles", ".baseline.json"),
 
   projectSettings(projectDir: string) {
     return join(projectDir, ".claude", "settings.json");

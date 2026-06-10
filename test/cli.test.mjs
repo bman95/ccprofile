@@ -1,0 +1,178 @@
+import { test, before, beforeEach, after } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLI = join(__dirname, "..", "dist", "cli.js");
+
+let HOME;
+let claudeDir;
+
+function run(args, opts = {}) {
+  try {
+    const stdout = execFileSync("node", [CLI, ...args], {
+      env: { ...process.env, HOME, USERPROFILE: HOME },
+      encoding: "utf-8",
+    });
+    return { stdout, code: 0 };
+  } catch (err) {
+    if (opts.allowFail) {
+      return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", code: err.status ?? 1 };
+    }
+    throw err;
+  }
+}
+
+function makeSkill(dir, name, { description = "", disableInvocation = false } = {}) {
+  const skillDir = join(dir, name);
+  mkdirSync(skillDir, { recursive: true });
+  const fm = [
+    "---",
+    `name: ${name}`,
+    `description: ${description}`,
+    ...(disableInvocation ? ["disable-model-invocation: true"] : []),
+    "---",
+    "",
+    "Body content here.",
+  ].join("\n");
+  writeFileSync(join(skillDir, "SKILL.md"), fm);
+}
+
+function readSettings() {
+  return JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf-8"));
+}
+
+before(() => {
+  // Build once so tests run against the compiled CLI.
+  execFileSync("npm", ["run", "build"], { cwd: join(__dirname, ".."), stdio: "ignore" });
+});
+
+beforeEach(() => {
+  HOME = mkdtempSync(join(tmpdir(), "ccprofile-test-"));
+  claudeDir = join(HOME, ".claude");
+  mkdirSync(join(claudeDir, "skills"), { recursive: true });
+  makeSkill(join(claudeDir, "skills"), "pdf", { description: "Work with PDF files and forms" });
+  makeSkill(join(claudeDir, "skills"), "docx", { description: "Edit Word documents" });
+  makeSkill(join(claudeDir, "skills"), "playwright", { description: "Drive a browser for automation tasks" });
+  makeSkill(join(claudeDir, "skills"), "ccprofile", { description: "edit profiles", disableInvocation: true });
+  writeFileSync(
+    join(claudeDir, "settings.json"),
+    JSON.stringify({ enabledPlugins: { "frontend-design@x": true } }, null, 2)
+  );
+});
+
+after(() => {
+  if (HOME && existsSync(HOME)) rmSync(HOME, { recursive: true, force: true });
+});
+
+test("create, list, and show a profile", () => {
+  run(["create", "docs", "Document work"]);
+  const list = run(["list"]).stdout;
+  assert.match(list, /docs/);
+  const show = run(["show", "docs"]).stdout;
+  assert.match(show, /"name": "docs"/);
+  assert.match(show, /Document work/);
+});
+
+test("invalid profile names are rejected", () => {
+  const res = run(["create", "../evil"], { allowFail: true });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /Invalid profile name/);
+});
+
+test("use moves non-profile skills to disabled but keeps the companion skill", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["use", "docs"]);
+
+  assert.ok(existsSync(join(claudeDir, "skills", "pdf")), "pdf stays active");
+  assert.ok(existsSync(join(claudeDir, "skills", "ccprofile")), "companion stays active");
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")), "docx disabled");
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "playwright")), "playwright disabled");
+});
+
+test("reset restores skills AND plugin/mcp state from baseline", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["add", "docs", "plugin", "frontend-design@x", "--disable"]);
+  run(["use", "docs"]);
+
+  assert.equal(readSettings().enabledPlugins["frontend-design@x"], false, "plugin disabled by profile");
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")));
+
+  run(["reset"]);
+
+  assert.equal(readSettings().enabledPlugins["frontend-design@x"], true, "plugin restored");
+  assert.ok(existsSync(join(claudeDir, "skills", "docx")), "docx restored");
+  assert.ok(existsSync(join(claudeDir, "skills", "playwright")), "playwright restored");
+  assert.equal(run(["current"]).stdout.includes("No active profile"), true);
+});
+
+test("dry-run makes no changes", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  const res = run(["use", "docs", "--dry-run"]);
+  assert.match(res.stdout, /dry run/);
+  assert.ok(!existsSync(join(claudeDir, "skills-disabled", "docx")), "nothing moved in dry-run");
+  assert.equal(run(["current"]).stdout.includes("No active profile"), true);
+});
+
+test("snapshot captures the current environment", () => {
+  run(["snapshot", "now", "my setup"]);
+  const show = JSON.parse(run(["show", "now", "--json"]).stdout);
+  assert.deepEqual(show.skills.sort(), ["docx", "pdf", "playwright"]);
+  assert.equal(show.plugins["frontend-design@x"], true);
+});
+
+test("rename a profile", () => {
+  run(["create", "old"]);
+  run(["rename", "old", "new"]);
+  assert.match(run(["list"]).stdout, /new/);
+  const res = run(["show", "old"], { allowFail: true });
+  assert.equal(res.code, 1);
+});
+
+test("stats reports token costs and savings", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  const stats = JSON.parse(run(["stats", "--json"]).stdout);
+  assert.ok(stats.totalTokens > 0);
+  const pdf = stats.skills.find((s) => s.name === "pdf");
+  assert.ok(pdf.idleTokens > 0, "auto-invocable skill has idle cost");
+  const companion = stats.skills.find((s) => s.name === "ccprofile");
+  assert.equal(companion.idleTokens, 0, "non-auto-invocable skill costs ~0");
+  const docs = stats.profiles.find((p) => p.name === "docs");
+  assert.ok(docs.savedTokens > 0, "profile saves tokens");
+});
+
+test("current and stats work while a profile (and baseline) is active", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["use", "docs"]);
+  // The internal .baseline.json must not leak into profile listings.
+  const cur = run(["current"]);
+  assert.match(cur.stdout, /Active profile: docs/);
+  const list = run(["list"]).stdout;
+  assert.ok(!list.includes("baseline"), "baseline not listed as a profile");
+  const stats = run(["stats", "--json"]);
+  assert.equal(stats.code, 0);
+});
+
+test("switching profiles does not corrupt the baseline", () => {
+  run(["create", "a"]);
+  run(["add", "a", "skill", "pdf"]);
+  run(["create", "b"]);
+  run(["add", "b", "skill", "docx"]);
+
+  run(["use", "a"]);
+  run(["use", "b"]);
+  // After reset we should be back to the ORIGINAL state, not profile a's state.
+  run(["reset"]);
+  for (const s of ["pdf", "docx", "playwright"]) {
+    assert.ok(existsSync(join(claudeDir, "skills", s)), `${s} restored to original`);
+  }
+});

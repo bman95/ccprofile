@@ -16,9 +16,12 @@ Run these via Bash to inspect and modify profiles:
 
 ```bash
 ccprofile list                    # List all profiles
-ccprofile show <name>             # Show profile details
-ccprofile current                 # Show active profile
+ccprofile show <name>             # Show profile details + estimated savings
+ccprofile current                 # Show active profile and token savings
+ccprofile stats                   # Per-skill token cost and per-profile savings
 ccprofile create <name> [desc]    # Create new profile
+ccprofile snapshot <name> [desc]  # Capture current environment as a profile
+ccprofile rename <from> <to>      # Rename a profile
 ccprofile delete <name>           # Delete profile
 
 ccprofile add <profile> skill <name>              # Add skill
@@ -29,8 +32,8 @@ ccprofile remove <profile> skill <name>           # Remove skill
 ccprofile remove <profile> plugin <name>           # Remove plugin
 ccprofile remove <profile> mcp <name>              # Remove MCP server
 
-ccprofile use <name>              # Activate profile
-ccprofile reset                   # Restore all skills
+ccprofile use <name> [--dry-run]  # Activate profile (preview with --dry-run)
+ccprofile reset                   # Restore the original baseline environment
 ```
 
 ## Context
@@ -56,4 +59,8 @@ When the user provides `$ARGUMENTS`, interpret the intent:
 - `/profile-edit list` → show profiles
 - `/profile-edit docs add skill pdf` → add pdf skill to docs profile
 - `/profile-edit create backend` → create a new backend profile
-- `/profile-edit suggest` → analyze current skills/plugins and suggest profile groupings
+- `/profile-edit suggest` → run `ccprofile stats`, then group the most expensive skills into profiles
+- `/profile-edit snapshot <name>` → capture the current environment as a profile
+
+When suggesting profiles, prefer running `ccprofile stats` first: it reveals which
+skills cost the most idle tokens, so you can recommend groupings that maximize savings.
