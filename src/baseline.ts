@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import { paths } from "./paths.js";
 import { readJson, writeJsonSafe } from "./config.js";
 import { listSkillDirs } from "./skills.js";
+import { listItemNames, AGENT_KIND, COMMAND_KIND } from "./items.js";
 import type { Baseline, ClaudeSettings } from "./types.js";
 
 export async function getBaseline(): Promise<Baseline | null> {
@@ -23,6 +24,8 @@ export async function captureBaseline(): Promise<Baseline> {
   const baseline: Baseline = {
     capturedAt: new Date().toISOString(),
     activeSkills: await listSkillDirs(paths.skillsDir),
+    activeAgents: await listItemNames(AGENT_KIND.activeDir, AGENT_KIND.dirsOnly),
+    activeCommands: await listItemNames(COMMAND_KIND.activeDir, COMMAND_KIND.dirsOnly),
     settings: {
       ...(settings.enabledPlugins
         ? { enabledPlugins: { ...settings.enabledPlugins } }

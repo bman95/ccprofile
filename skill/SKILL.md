@@ -18,19 +18,24 @@ Run these via Bash to inspect and modify profiles:
 ccprofile list                    # List all profiles
 ccprofile show <name>             # Show profile details + estimated savings
 ccprofile current                 # Show active profile and token savings
-ccprofile stats                   # Per-skill token cost and per-profile savings
+ccprofile stats                   # Per-item token cost and per-profile savings
 ccprofile create <name> [desc]    # Create new profile
 ccprofile snapshot <name> [desc]  # Capture current environment as a profile
 ccprofile rename <from> <to>      # Rename a profile
 ccprofile delete <name>           # Delete profile
 
-ccprofile add <profile> skill <name>              # Add skill
+ccprofile add <profile> <skill|agent|command> <name>        # Add keep-list item
 ccprofile add <profile> plugin <name> [--enable|--disable]  # Add plugin toggle
 ccprofile add <profile> mcp <name> [--enable|--disable]     # Add MCP toggle
+ccprofile remove <profile> <plugin|skill|agent|command|mcp> <name>
 
-ccprofile remove <profile> skill <name>           # Remove skill
-ccprofile remove <profile> plugin <name>           # Remove plugin
-ccprofile remove <profile> mcp <name>              # Remove MCP server
+ccprofile bind <profile> [dir]    # Bind a directory to a profile
+ccprofile unbind [dir]            # Remove a directory binding
+ccprofile bindings                # List bindings
+ccprofile auto                    # Activate the profile bound to cwd
+
+ccprofile export <name> [file]    # Export profile JSON (stdout if no file)
+ccprofile import <file|->         # Import profile JSON (--force to overwrite)
 
 ccprofile use <name> [--dry-run]  # Activate profile (preview with --dry-run)
 ccprofile reset                   # Restore the original baseline environment
@@ -39,9 +44,10 @@ ccprofile reset                   # Restore the original baseline environment
 ## Context
 
 - Skills live in `~/.claude/skills/` (active) and `~/.claude/skills-disabled/` (inactive)
+- Agents and slash commands follow the same pattern: `~/.claude/agents[-disabled]/`, `~/.claude/commands[-disabled]/`
 - Plugins are toggled in `~/.claude/settings.json` under `enabledPlugins`
 - MCP servers are managed via `enabledMcpjsonServers` / `disabledMcpjsonServers`
-- Profiles are stored as JSON in `~/.claude/profiles/<name>.json`
+- Profiles are stored as JSON in `~/.claude/profiles/<name>.json`; directory bindings in `~/.claude/profiles/.bindings.json`
 
 ## Workflow
 

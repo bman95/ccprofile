@@ -14,3 +14,35 @@ export function assertValidProfileName(name: string): void {
     throw new Error(`Invalid profile name "${name}".`);
   }
 }
+
+/** Validate untrusted profile JSON (e.g. from `ccprofile import`). */
+export function validateProfileShape(data: unknown): asserts data is import("./types.js").Profile {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error("Invalid profile: expected a JSON object.");
+  }
+  const p = data as Record<string, unknown>;
+  if (typeof p.name !== "string") {
+    throw new Error('Invalid profile: missing string "name" field.');
+  }
+  assertValidProfileName(p.name);
+  if (p.description !== undefined && typeof p.description !== "string") {
+    throw new Error('Invalid profile: "description" must be a string.');
+  }
+  for (const key of ["skills", "agents", "commands"] as const) {
+    const v = p[key];
+    if (v !== undefined && (!Array.isArray(v) || v.some((s) => typeof s !== "string"))) {
+      throw new Error(`Invalid profile: "${key}" must be an array of strings.`);
+    }
+  }
+  for (const key of ["plugins", "mcpServers"] as const) {
+    const v = p[key];
+    if (v !== undefined) {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) {
+        throw new Error(`Invalid profile: "${key}" must be an object of booleans.`);
+      }
+      if (Object.values(v).some((b) => typeof b !== "boolean")) {
+        throw new Error(`Invalid profile: "${key}" values must be booleans.`);
+      }
+    }
+  }
+}

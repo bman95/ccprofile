@@ -2,35 +2,32 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { paths } from "./paths.js";
+import { listEntries, AGENT_KIND, COMMAND_KIND, type KindSpec } from "./items.js";
+
+export { PROTECTED_SKILLS } from "./items.js";
 
 export interface SkillInfo {
   name: string;
+  kind: "skill" | "agent" | "command";
   active: boolean;
   description: string;
   /**
-   * Estimated tokens this skill costs in the *idle* system prompt. Claude Code
-   * loads each skill's metadata (name + description) on every turn until the
-   * skill is actually invoked, so this metadata size is the recurring cost a
-   * profile can eliminate by disabling the skill.
+   * Estimated tokens this item costs in the *idle* system prompt. Claude Code
+   * loads each skill/agent/command's metadata (name + description) on every
+   * turn until it is actually invoked, so this metadata size is the recurring
+   * cost a profile can eliminate by disabling the item.
    */
   idleTokens: number;
 }
 
 const CHARS_PER_TOKEN = 4;
 
-/**
- * Skills that must never be disabled by a profile. The companion skill powers
- * `/profile-edit`; disabling it would make profile management unreachable from
- * inside Claude Code. It is non-auto-invocable so it costs ~0 idle tokens.
- */
-export const PROTECTED_SKILLS = ["ccprofile"];
-
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
 /** Extract the YAML frontmatter block (between the first pair of `---` lines). */
-function parseFrontmatter(content: string): Record<string, string> {
+export function parseFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return {};
   const out: Record<string, string> = {};
@@ -50,26 +47,44 @@ function parseFrontmatter(content: string): Record<string, string> {
   return out;
 }
 
-async function readSkillMeta(
-  dir: string,
-  name: string
-): Promise<{ description: string; idleTokens: number }> {
-  const skillMd = join(dir, name, "SKILL.md");
+function metaCost(name: string, fm: Record<string, string>): { description: string; idleTokens: number } {
+  // Items with disable-model-invocation are not auto-loaded into the system
+  // prompt, so they cost ~0 idle tokens.
+  const disabled = (fm["disable-model-invocation"] ?? "").toLowerCase() === "true";
+  const meta = `${fm.name ?? name}: ${fm.description ?? ""}`;
+  return {
+    description: fm.description ?? "",
+    idleTokens: disabled ? 0 : estimateTokens(meta),
+  };
+}
+
+async function readMdMeta(filePath: string, name: string): Promise<{ description: string; idleTokens: number }> {
   try {
-    const content = await readFile(skillMd, "utf-8");
-    const fm = parseFrontmatter(content);
-    // Skills with disable-model-invocation are not auto-loaded into the system
-    // prompt, so they cost ~0 idle tokens.
-    const disabled =
-      (fm["disable-model-invocation"] ?? "").toLowerCase() === "true";
-    const meta = `${fm.name ?? name}: ${fm.description ?? ""}`;
-    return {
-      description: fm.description ?? "",
-      idleTokens: disabled ? 0 : estimateTokens(meta),
-    };
+    const content = await readFile(filePath, "utf-8");
+    return metaCost(name, parseFrontmatter(content));
   } catch {
     return { description: "", idleTokens: 0 };
   }
+}
+
+/** Sum the metadata cost of every .md file under a directory (recursively). */
+async function dirMdCost(dir: string): Promise<number> {
+  let total = 0;
+  let dirents;
+  try {
+    dirents = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const e of dirents) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      total += await dirMdCost(full);
+    } else if (e.isFile() && e.name.endsWith(".md")) {
+      total += (await readMdMeta(full, e.name.slice(0, -3))).idleTokens;
+    }
+  }
+  return total;
 }
 
 /** List skill directory names in a given location. */
@@ -81,7 +96,6 @@ export async function listSkillDirs(dir: string): Promise<string[]> {
     if (e.isDirectory()) {
       names.push(e.name);
     } else if (e.isSymbolicLink()) {
-      // Follow symlinks that point at directories.
       try {
         if ((await stat(join(dir, e.name))).isDirectory()) names.push(e.name);
       } catch {
@@ -94,17 +108,50 @@ export async function listSkillDirs(dir: string): Promise<string[]> {
 
 /** Inventory every skill (active + disabled) with token estimates. */
 export async function scanSkills(): Promise<SkillInfo[]> {
-  const active = await listSkillDirs(paths.skillsDir);
-  const disabled = await listSkillDirs(paths.skillsDisabledDir);
-
   const infos: SkillInfo[] = [];
-  for (const name of active) {
-    const meta = await readSkillMeta(paths.skillsDir, name);
-    infos.push({ name, active: true, ...meta });
-  }
-  for (const name of disabled) {
-    const meta = await readSkillMeta(paths.skillsDisabledDir, name);
-    infos.push({ name, active: false, ...meta });
+  for (const [dir, active] of [
+    [paths.skillsDir, true],
+    [paths.skillsDisabledDir, false],
+  ] as const) {
+    for (const name of await listSkillDirs(dir)) {
+      const meta = await readMdMeta(join(dir, name, "SKILL.md"), name);
+      infos.push({ name, kind: "skill", active, ...meta });
+    }
   }
   return infos.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Inventory agents or slash commands (files or namespace dirs) with token estimates. */
+export async function scanFileItems(spec: KindSpec): Promise<SkillInfo[]> {
+  const infos: SkillInfo[] = [];
+  for (const [dir, active] of [
+    [spec.activeDir, true],
+    [spec.disabledDir, false],
+  ] as const) {
+    for (const entry of await listEntries(dir, spec.dirsOnly)) {
+      const full = join(dir, entry.base);
+      if (entry.base.endsWith(".md")) {
+        const meta = await readMdMeta(full, entry.name);
+        infos.push({ name: entry.name, kind: spec.kind, active, ...meta });
+      } else {
+        // Namespace directory: cost is the sum of all .md files inside.
+        infos.push({
+          name: entry.name,
+          kind: spec.kind,
+          active,
+          description: "",
+          idleTokens: await dirMdCost(full),
+        });
+      }
+    }
+  }
+  return infos.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function scanAgents(): Promise<SkillInfo[]> {
+  return scanFileItems(AGENT_KIND);
+}
+
+export async function scanCommands(): Promise<SkillInfo[]> {
+  return scanFileItems(COMMAND_KIND);
 }

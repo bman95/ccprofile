@@ -9,8 +9,13 @@ export const paths = {
   profilesDir: join(CLAUDE_DIR, "profiles"),
   skillsDir: join(CLAUDE_DIR, "skills"),
   skillsDisabledDir: join(CLAUDE_DIR, "skills-disabled"),
+  agentsDir: join(CLAUDE_DIR, "agents"),
+  agentsDisabledDir: join(CLAUDE_DIR, "agents-disabled"),
+  commandsDir: join(CLAUDE_DIR, "commands"),
+  commandsDisabledDir: join(CLAUDE_DIR, "commands-disabled"),
   activeProfileFile: join(CLAUDE_DIR, "profiles", ".active"),
   baselineFile: join(CLAUDE_DIR, "profiles", ".baseline.json"),
+  bindingsFile: join(CLAUDE_DIR, "profiles", ".bindings.json"),
 
   projectSettings(projectDir: string) {
     return join(projectDir, ".claude", "settings.json");

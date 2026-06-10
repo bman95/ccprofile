@@ -17,6 +17,8 @@ function run(args, opts = {}) {
     const stdout = execFileSync("node", [CLI, ...args], {
       env: { ...process.env, HOME, USERPROFILE: HOME },
       encoding: "utf-8",
+      cwd: opts.cwd,
+      input: opts.input,
     });
     return { stdout, code: 0 };
   } catch (err) {
@@ -25,6 +27,12 @@ function run(args, opts = {}) {
     }
     throw err;
   }
+}
+
+function makeMdItem(dir, name, { description = "" } = {}) {
+  mkdirSync(dir, { recursive: true });
+  const fm = ["---", `name: ${name}`, `description: ${description}`, "---", "", "Body."].join("\n");
+  writeFileSync(join(dir, `${name}.md`), fm);
 }
 
 function makeSkill(dir, name, { description = "", disableInvocation = false } = {}) {
@@ -59,6 +67,9 @@ beforeEach(() => {
   makeSkill(join(claudeDir, "skills"), "docx", { description: "Edit Word documents" });
   makeSkill(join(claudeDir, "skills"), "playwright", { description: "Drive a browser for automation tasks" });
   makeSkill(join(claudeDir, "skills"), "ccprofile", { description: "edit profiles", disableInvocation: true });
+  makeMdItem(join(claudeDir, "agents"), "reviewer", { description: "Reviews code for bugs" });
+  makeMdItem(join(claudeDir, "agents"), "tester", { description: "Writes and runs tests" });
+  makeMdItem(join(claudeDir, "commands"), "deploy", { description: "Deploy the app" });
   writeFileSync(
     join(claudeDir, "settings.json"),
     JSON.stringify({ enabledPlugins: { "frontend-design@x": true } }, null, 2)
@@ -136,17 +147,98 @@ test("rename a profile", () => {
   assert.equal(res.code, 1);
 });
 
-test("stats reports token costs and savings", () => {
+test("stats reports token costs and savings for skills, agents, and commands", () => {
   run(["create", "docs"]);
   run(["add", "docs", "skill", "pdf"]);
   const stats = JSON.parse(run(["stats", "--json"]).stdout);
   assert.ok(stats.totalTokens > 0);
-  const pdf = stats.skills.find((s) => s.name === "pdf");
+  const pdf = stats.items.find((s) => s.name === "pdf");
   assert.ok(pdf.idleTokens > 0, "auto-invocable skill has idle cost");
-  const companion = stats.skills.find((s) => s.name === "ccprofile");
+  const companion = stats.items.find((s) => s.name === "ccprofile");
   assert.equal(companion.idleTokens, 0, "non-auto-invocable skill costs ~0");
+  const agent = stats.items.find((s) => s.name === "reviewer");
+  assert.equal(agent.kind, "agent");
+  assert.ok(agent.idleTokens > 0, "agents have idle cost");
+  const command = stats.items.find((s) => s.name === "deploy");
+  assert.equal(command.kind, "command");
+  assert.ok(command.idleTokens > 0, "commands have idle cost");
   const docs = stats.profiles.find((p) => p.name === "docs");
   assert.ok(docs.savedTokens > 0, "profile saves tokens");
+});
+
+test("profiles toggle agents and commands, and reset restores them", () => {
+  run(["create", "review"]);
+  run(["add", "review", "skill", "pdf"]);
+  run(["add", "review", "agent", "reviewer"]);
+  run(["add", "review", "command", "deploy"]);
+  run(["use", "review"]);
+
+  assert.ok(existsSync(join(claudeDir, "agents", "reviewer.md")), "kept agent stays");
+  assert.ok(existsSync(join(claudeDir, "agents-disabled", "tester.md")), "other agent disabled");
+  assert.ok(existsSync(join(claudeDir, "commands", "deploy.md")), "kept command stays");
+
+  run(["reset"]);
+  assert.ok(existsSync(join(claudeDir, "agents", "tester.md")), "agent restored");
+  assert.ok(!existsSync(join(claudeDir, "agents-disabled", "tester.md")));
+});
+
+test("a profile that declares no agents leaves agents untouched", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["use", "docs"]);
+  assert.ok(existsSync(join(claudeDir, "agents", "reviewer.md")));
+  assert.ok(existsSync(join(claudeDir, "agents", "tester.md")));
+});
+
+test("bind/auto activates the bound profile from a subdirectory", () => {
+  run(["create", "work"]);
+  run(["add", "work", "skill", "pdf"]);
+  const repo = join(HOME, "myrepo");
+  const sub = join(repo, "src", "deep");
+  mkdirSync(sub, { recursive: true });
+
+  run(["bind", "work", repo]);
+  assert.match(run(["bindings"]).stdout, /myrepo.*work/);
+
+  const res = run(["auto"], { cwd: sub });
+  assert.match(res.stdout, /Profile "work" activated/);
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")));
+
+  // Second invocation is a no-op.
+  assert.match(run(["auto"], { cwd: sub }).stdout, /already active/);
+
+  // Outside the bound tree, nothing happens.
+  assert.match(run(["auto"], { cwd: HOME }).stdout, /No profile bound/);
+
+  run(["unbind", repo]);
+  assert.match(run(["bindings"]).stdout, /No directory bindings/);
+});
+
+test("export/import roundtrip and validation", () => {
+  run(["create", "docs", "Doc work"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["add", "docs", "agent", "reviewer"]);
+
+  const exported = run(["export", "docs"]).stdout;
+  run(["delete", "docs"]);
+
+  run(["import", "-"], { input: exported });
+  const show = JSON.parse(run(["show", "docs", "--json"]).stdout);
+  assert.deepEqual(show.skills, ["pdf"]);
+  assert.deepEqual(show.agents, ["reviewer"]);
+
+  // Re-import without --force fails; with --force succeeds.
+  const dup = run(["import", "-"], { input: exported, allowFail: true });
+  assert.equal(dup.code, 1);
+  assert.match(dup.stderr, /already exists/);
+  run(["import", "-", "--force"], { input: exported });
+
+  // Malformed profiles are rejected.
+  const bad = run(["import", "-"], { input: '{"name":"x","skills":"nope"}', allowFail: true });
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /must be an array of strings/);
+  const traversal = run(["import", "-"], { input: '{"name":"../evil"}', allowFail: true });
+  assert.equal(traversal.code, 1);
 });
 
 test("current and stats work while a profile (and baseline) is active", () => {

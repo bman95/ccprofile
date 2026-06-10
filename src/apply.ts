@@ -1,11 +1,7 @@
-import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { paths } from "./paths.js";
 import { readJson, writeJsonSafe } from "./config.js";
 import { setActiveProfile, getProfile, clearActiveProfile } from "./profiles.js";
-import { moveDir } from "./fsutil.js";
-import { listSkillDirs, PROTECTED_SKILLS } from "./skills.js";
+import { syncItems, listItemNames, ALL_KINDS, SKILL_KIND, AGENT_KIND, COMMAND_KIND } from "./items.js";
 import { ensureBaseline, getBaseline, clearBaseline } from "./baseline.js";
 import type { ClaudeSettings } from "./types.js";
 
@@ -38,8 +34,13 @@ export async function applyProfile(
     changes.push(...(await applyPlugins(settingsPath, profile.plugins, opts.dryRun)));
   }
 
-  if (profile.skills && profile.skills.length > 0) {
-    changes.push(...(await applySkills(profile.skills, opts.dryRun)));
+  // Skills, agents, and commands all follow the same keep-list semantics:
+  // an empty/absent list leaves that kind untouched.
+  for (const spec of ALL_KINDS) {
+    const keep = profile[spec.plural];
+    if (keep && keep.length > 0) {
+      changes.push(...(await syncItems(spec, new Set(keep), opts.dryRun, keep)));
+    }
   }
 
   if (profile.mcpServers && Object.keys(profile.mcpServers).length > 0) {
@@ -57,28 +58,41 @@ export async function resetProfile(opts: { dryRun?: boolean } = {}): Promise<str
   const baseline = await getBaseline();
 
   if (baseline) {
-    // Precise restore to the captured environment.
-    const target = new Set([...baseline.activeSkills, ...PROTECTED_SKILLS]);
-    changes.push(...(await restoreSkills(target, opts.dryRun)));
+    // Precise restore to the captured environment. Baselines from v0.2 lack
+    // the agent/command fields; for those, restore everything of that kind.
+    const targets: Array<[typeof SKILL_KIND, string[] | undefined]> = [
+      [SKILL_KIND, baseline.activeSkills],
+      [AGENT_KIND, baseline.activeAgents],
+      [COMMAND_KIND, baseline.activeCommands],
+    ];
+    for (const [spec, captured] of targets) {
+      const target = captured ?? (await allKnownItems(spec));
+      changes.push(...(await syncItems(spec, new Set(target), opts.dryRun)));
+    }
     changes.push(...(await restoreSettings(baseline.settings, opts.dryRun)));
 
     if (!opts.dryRun) {
       await clearBaseline();
       await clearActiveProfile();
     }
-    changes.push("Restored original environment (skills, plugins, MCP servers)");
+    changes.push("Restored original environment (skills, agents, commands, plugins, MCP servers)");
   } else {
-    // Legacy fallback: no baseline recorded — restore every disabled skill.
-    const target = new Set([
-      ...(await listSkillDirs(paths.skillsDir)),
-      ...(await listSkillDirs(paths.skillsDisabledDir)),
-    ]);
-    changes.push(...(await restoreSkills(target, opts.dryRun)));
+    // Legacy fallback: no baseline recorded — re-enable everything disabled.
+    for (const spec of ALL_KINDS) {
+      changes.push(...(await syncItems(spec, new Set(await allKnownItems(spec)), opts.dryRun)));
+    }
     if (!opts.dryRun) await clearActiveProfile();
-    changes.push("Profile cleared — all skills restored");
+    changes.push("Profile cleared — all items restored");
   }
 
   return changes;
+}
+
+async function allKnownItems(spec: typeof SKILL_KIND): Promise<string[]> {
+  return [
+    ...(await listItemNames(spec.activeDir, spec.dirsOnly)),
+    ...(await listItemNames(spec.disabledDir, spec.dirsOnly)),
+  ];
 }
 
 async function applyPlugins(
@@ -101,61 +115,6 @@ async function applyPlugins(
     settings.enabledPlugins = current;
     await writeJsonSafe(settingsPath, settings as Record<string, unknown>);
   }
-  return changes;
-}
-
-async function applySkills(skills: string[], dryRun?: boolean): Promise<string[]> {
-  // Desired active set is the profile's skills plus always-protected skills.
-  const keep = new Set([...skills, ...PROTECTED_SKILLS]);
-  return restoreSkills(keep, dryRun, { warnMissing: skills });
-}
-
-/**
- * Make the active skill set exactly match `target`: enable everything in the
- * set that is currently disabled, disable everything active that is not.
- */
-async function restoreSkills(
-  target: Set<string>,
-  dryRun?: boolean,
-  opts: { warnMissing?: string[] } = {}
-): Promise<string[]> {
-  const changes: string[] = [];
-
-  if (!dryRun && !existsSync(paths.skillsDisabledDir)) {
-    await mkdir(paths.skillsDisabledDir, { recursive: true });
-  }
-
-  const active = await listSkillDirs(paths.skillsDir);
-  const disabled = await listSkillDirs(paths.skillsDisabledDir);
-  const known = new Set([...active, ...disabled]);
-
-  for (const skill of target) {
-    if (disabled.includes(skill)) {
-      if (!dryRun) {
-        await moveDir(join(paths.skillsDisabledDir, skill), join(paths.skillsDir, skill));
-      }
-      changes.push(`Skill enabled: ${skill}`);
-    }
-  }
-
-  for (const skill of active) {
-    if (!target.has(skill)) {
-      const to = join(paths.skillsDisabledDir, skill);
-      if (!existsSync(to)) {
-        if (!dryRun) {
-          await moveDir(join(paths.skillsDir, skill), to);
-        }
-        changes.push(`Skill disabled: ${skill}`);
-      }
-    }
-  }
-
-  for (const skill of opts.warnMissing ?? []) {
-    if (!known.has(skill)) {
-      changes.push(`Warning: skill "${skill}" not found in ~/.claude/skills or skills-disabled`);
-    }
-  }
-
   return changes;
 }
 

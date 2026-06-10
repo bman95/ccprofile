@@ -3,6 +3,10 @@ export interface Profile {
   description?: string;
   plugins?: Record<string, boolean>;
   skills?: string[];
+  /** Subagents (~/.claude/agents/) kept active when this profile is used. */
+  agents?: string[];
+  /** Slash commands (~/.claude/commands/) kept active when this profile is used. */
+  commands?: string[];
   mcpServers?: Record<string, boolean>;
 }
 
@@ -22,6 +26,10 @@ export interface Baseline {
   capturedAt: string;
   /** Skills that were active (in ~/.claude/skills/) at capture time. */
   activeSkills: string[];
+  /** Agents active at capture time (absent in baselines from v0.2). */
+  activeAgents?: string[];
+  /** Slash commands active at capture time (absent in baselines from v0.2). */
+  activeCommands?: string[];
   /** Relevant slices of global settings.json at capture time. */
   settings: {
     enabledPlugins?: Record<string, boolean>;
