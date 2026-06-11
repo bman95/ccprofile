@@ -128,6 +128,10 @@ export async function syncItems(
           await moveDir(join(spec.disabledDir, e.base), to);
         }
         changes.push(`${spec.label} enabled: ${e.name}`);
+      } else {
+        changes.push(
+          `Warning: ${spec.kind} "${e.name}" exists in both ${spec.activeDir} and ${spec.disabledDir}; left in place`
+        );
       }
     }
   }
@@ -140,6 +144,10 @@ export async function syncItems(
           await moveDir(join(spec.activeDir, e.base), to);
         }
         changes.push(`${spec.label} disabled: ${e.name}`);
+      } else {
+        changes.push(
+          `Warning: ${spec.kind} "${e.name}" exists in both ${spec.activeDir} and ${spec.disabledDir}; left active`
+        );
       }
     }
   }

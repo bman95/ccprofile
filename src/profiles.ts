@@ -3,6 +3,7 @@ import { readdir, mkdir, rm, rename, writeFile, readFile } from "node:fs/promise
 import { paths } from "./paths.js";
 import { readJson, writeJsonSafe } from "./config.js";
 import { assertValidProfileName } from "./validate.js";
+import { retargetBindings, removeBindingsFor } from "./bindings.js";
 import type { Profile } from "./types.js";
 
 async function ensureProfilesDir(): Promise<void> {
@@ -51,6 +52,7 @@ export async function renameProfile(from: string, to: string): Promise<void> {
   if ((await getActiveProfile()) === from) {
     await setActiveProfile(to);
   }
+  await retargetBindings(from, to);
 }
 
 export async function deleteProfile(name: string): Promise<boolean> {
@@ -63,6 +65,7 @@ export async function deleteProfile(name: string): Promise<boolean> {
   if (active === name) {
     await clearActiveProfile();
   }
+  await removeBindingsFor(name);
   return true;
 }
 

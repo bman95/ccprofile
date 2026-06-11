@@ -19,16 +19,18 @@ export async function applyProfile(
     throw new Error(`Profile "${name}" not found. Run "ccprofile list" to see available profiles.`);
   }
 
-  // Capture a restore point before the first mutation so reset is reversible.
-  if (!opts.dryRun) {
-    await ensureBaseline();
-  }
-
-  const changes: string[] = [];
-
   const settingsPath = opts.projectDir
     ? paths.projectSettings(opts.projectDir)
     : paths.settingsJson;
+
+  // Capture a restore point before the first mutation so reset is reversible.
+  // The baseline remembers which settings file it captured, so reset restores
+  // the same file this activation modifies.
+  if (!opts.dryRun) {
+    await ensureBaseline(settingsPath);
+  }
+
+  const changes: string[] = [];
 
   if (profile.plugins && Object.keys(profile.plugins).length > 0) {
     changes.push(...(await applyPlugins(settingsPath, profile.plugins, opts.dryRun)));
@@ -69,7 +71,14 @@ export async function resetProfile(opts: { dryRun?: boolean } = {}): Promise<str
       const target = captured ?? (await allKnownItems(spec));
       changes.push(...(await syncItems(spec, new Set(target), opts.dryRun)));
     }
-    changes.push(...(await restoreSettings(baseline.settings, opts.dryRun)));
+    // Older baselines lack settingsPath; they were captured from the global file.
+    changes.push(
+      ...(await restoreSettings(
+        baseline.settings,
+        baseline.settingsPath ?? paths.settingsJson,
+        opts.dryRun
+      ))
+    );
 
     if (!opts.dryRun) {
       await clearBaseline();
@@ -157,13 +166,14 @@ async function applyMcpServers(
   return changes;
 }
 
-/** Restore the captured slices of settings.json, removing keys absent at capture. */
+/** Restore the captured slices of a settings file, removing keys absent at capture. */
 async function restoreSettings(
   baseline: { enabledPlugins?: Record<string, boolean>; enabledMcpjsonServers?: string[]; disabledMcpjsonServers?: string[] },
+  settingsPath: string,
   dryRun?: boolean
 ): Promise<string[]> {
   const changes: string[] = [];
-  const settings = (await readJson<ClaudeSettings>(paths.settingsJson)) ?? {};
+  const settings = (await readJson<ClaudeSettings>(settingsPath)) ?? {};
   let touched = false;
 
   const keys = ["enabledPlugins", "enabledMcpjsonServers", "disabledMcpjsonServers"] as const;
@@ -182,7 +192,7 @@ async function restoreSettings(
   }
 
   if (!dryRun && touched) {
-    await writeJsonSafe(paths.settingsJson, settings as Record<string, unknown>);
+    await writeJsonSafe(settingsPath, settings as Record<string, unknown>);
   }
   return changes;
 }

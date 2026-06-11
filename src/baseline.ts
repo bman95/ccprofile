@@ -19,13 +19,14 @@ export async function hasBaseline(): Promise<boolean> {
  * is no baseline yet, so we never overwrite the user's true original state when
  * switching between profiles.
  */
-export async function captureBaseline(): Promise<Baseline> {
-  const settings = (await readJson<ClaudeSettings>(paths.settingsJson)) ?? {};
+export async function captureBaseline(settingsPath: string = paths.settingsJson): Promise<Baseline> {
+  const settings = (await readJson<ClaudeSettings>(settingsPath)) ?? {};
   const baseline: Baseline = {
     capturedAt: new Date().toISOString(),
     activeSkills: await listSkillDirs(paths.skillsDir),
     activeAgents: await listItemNames(AGENT_KIND.activeDir, AGENT_KIND.dirsOnly),
     activeCommands: await listItemNames(COMMAND_KIND.activeDir, COMMAND_KIND.dirsOnly),
+    settingsPath,
     settings: {
       ...(settings.enabledPlugins
         ? { enabledPlugins: { ...settings.enabledPlugins } }
@@ -43,9 +44,9 @@ export async function captureBaseline(): Promise<Baseline> {
 }
 
 /** Capture a baseline only if one does not already exist. */
-export async function ensureBaseline(): Promise<void> {
+export async function ensureBaseline(settingsPath?: string): Promise<void> {
   if (!(await hasBaseline())) {
-    await captureBaseline();
+    await captureBaseline(settingsPath);
   }
 }
 

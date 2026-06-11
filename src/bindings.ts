@@ -32,6 +32,35 @@ export async function removeBinding(dir: string): Promise<boolean> {
   return true;
 }
 
+/** Rewrite every binding that points at `from` to point at `to`. */
+export async function retargetBindings(from: string, to: string): Promise<number> {
+  const bindings = await getBindings();
+  let count = 0;
+  for (const dir of Object.keys(bindings)) {
+    if (bindings[dir] === from) {
+      bindings[dir] = to;
+      count++;
+    }
+  }
+  if (count > 0) await writeJsonSafe(paths.bindingsFile, bindings);
+  return count;
+}
+
+/** Remove every binding that points at `profile`. */
+export async function removeBindingsFor(profile: string): Promise<number> {
+  const bindings = await getBindings();
+  const dirs = Object.keys(bindings).filter((d) => bindings[d] === profile);
+  for (const d of dirs) delete bindings[d];
+  if (dirs.length > 0) {
+    if (Object.keys(bindings).length === 0) {
+      if (existsSync(paths.bindingsFile)) await rm(paths.bindingsFile);
+    } else {
+      await writeJsonSafe(paths.bindingsFile, bindings);
+    }
+  }
+  return dirs.length;
+}
+
 /**
  * Find the binding that applies to `fromDir` by walking up the directory tree,
  * so a binding on a repo root covers every subdirectory.

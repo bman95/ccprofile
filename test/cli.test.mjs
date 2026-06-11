@@ -1,4 +1,4 @@
-import { test, before, beforeEach, after } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
@@ -54,11 +54,7 @@ function readSettings() {
   return JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf-8"));
 }
 
-before(() => {
-  // Build once so tests run against the compiled CLI.
-  execFileSync("npm", ["run", "build"], { cwd: join(__dirname, ".."), stdio: "ignore" });
-});
-
+// The CLI is built by the npm test script before any test runs.
 beforeEach(() => {
   HOME = mkdtempSync(join(tmpdir(), "ccprofile-test-"));
   claudeDir = join(HOME, ".claude");
@@ -76,7 +72,7 @@ beforeEach(() => {
   );
 });
 
-after(() => {
+afterEach(() => {
   if (HOME && existsSync(HOME)) rmSync(HOME, { recursive: true, force: true });
 });
 
@@ -252,6 +248,70 @@ test("current and stats work while a profile (and baseline) is active", () => {
   assert.ok(!list.includes("baseline"), "baseline not listed as a profile");
   const stats = run(["stats", "--json"]);
   assert.equal(stats.code, 0);
+});
+
+test("rename updates the active marker and directory bindings", () => {
+  run(["create", "old"]);
+  run(["add", "old", "skill", "pdf"]);
+  const repo = join(HOME, "repo");
+  mkdirSync(repo, { recursive: true });
+  run(["bind", "old", repo]);
+  run(["use", "old"]);
+
+  run(["rename", "old", "new"]);
+
+  assert.match(run(["current"]).stdout, /Active profile: new/);
+  assert.match(run(["bindings"]).stdout, /repo.*new/);
+  assert.match(run(["auto"], { cwd: repo }).stdout, /already active/);
+});
+
+test("delete removes directory bindings for the profile", () => {
+  run(["create", "tmp"]);
+  const repo = join(HOME, "repo");
+  mkdirSync(repo, { recursive: true });
+  run(["bind", "tmp", repo]);
+
+  run(["delete", "tmp"]);
+
+  assert.match(run(["bindings"]).stdout, /No directory bindings/);
+  assert.match(run(["auto"], { cwd: repo }).stdout, /No profile bound/);
+});
+
+test("use --project applies and reset restores project settings", () => {
+  const proj = join(HOME, "proj");
+  mkdirSync(join(proj, ".claude"), { recursive: true });
+  const projSettingsFile = join(proj, ".claude", "settings.json");
+  writeFileSync(projSettingsFile, JSON.stringify({ enabledPlugins: { "p@x": true } }, null, 2));
+  const projSettings = () => JSON.parse(readFileSync(projSettingsFile, "utf-8"));
+
+  run(["create", "docs"]);
+  run(["add", "docs", "plugin", "p@x", "--disable"]);
+  run(["use", "docs", "--project"], { cwd: proj });
+  assert.equal(projSettings().enabledPlugins["p@x"], false, "project plugin disabled");
+
+  run(["reset"]);
+  assert.equal(projSettings().enabledPlugins["p@x"], true, "project settings restored by reset");
+});
+
+test("snapshot omits kinds with no active items", () => {
+  rmSync(join(claudeDir, "agents"), { recursive: true, force: true });
+  run(["snapshot", "snap"]);
+  const show = JSON.parse(run(["show", "snap", "--json"]).stdout);
+  assert.equal(show.agents, undefined, "empty kind omitted instead of recorded as []");
+  assert.ok(show.skills.length > 0);
+});
+
+test("import rejects unsafe item names", () => {
+  const res = run(["import", "-"], { input: '{"name":"x","skills":["../evil"]}', allowFail: true });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /unsafe item name/);
+});
+
+test("export writes a profile to a file", () => {
+  run(["create", "docs", "Doc work"]);
+  const file = join(HOME, "out.json");
+  run(["export", "docs", file]);
+  assert.equal(JSON.parse(readFileSync(file, "utf-8")).name, "docs");
 });
 
 test("switching profiles does not corrupt the baseline", () => {

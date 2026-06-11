@@ -33,6 +33,16 @@ export function validateProfileShape(data: unknown): asserts data is import("./t
     if (v !== undefined && (!Array.isArray(v) || v.some((s) => typeof s !== "string"))) {
       throw new Error(`Invalid profile: "${key}" must be an array of strings.`);
     }
+    // Item names are joined into filesystem paths by syncItems.
+    if (
+      Array.isArray(v) &&
+      v.some(
+        (s: string) =>
+          !s || s.includes("/") || s.includes("\\") || s.includes("..") || s.startsWith(".")
+      )
+    ) {
+      throw new Error(`Invalid profile: "${key}" contains an unsafe item name.`);
+    }
   }
   for (const key of ["plugins", "mcpServers"] as const) {
     const v = p[key];

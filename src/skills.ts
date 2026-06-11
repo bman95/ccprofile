@@ -26,7 +26,11 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-/** Extract the YAML frontmatter block (between the first pair of `---` lines). */
+/**
+ * Extract the YAML frontmatter block (between the first pair of `---` lines).
+ * Only single-line `key: value` pairs are parsed; folded/multi-line YAML
+ * values are ignored, which slightly undercounts the token estimate.
+ */
 export function parseFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return {};

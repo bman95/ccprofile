@@ -30,7 +30,13 @@ export interface Baseline {
   activeAgents?: string[];
   /** Slash commands active at capture time (absent in baselines from v0.2). */
   activeCommands?: string[];
-  /** Relevant slices of global settings.json at capture time. */
+  /**
+   * Settings file the `settings` slice was captured from (e.g. a project
+   * settings.json when activated with --project). Absent in older baselines,
+   * which were always captured from the global settings.json.
+   */
+  settingsPath?: string;
+  /** Relevant slices of settings.json at capture time. */
   settings: {
     enabledPlugins?: Record<string, boolean>;
     enabledMcpjsonServers?: string[];

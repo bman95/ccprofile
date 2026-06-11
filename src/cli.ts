@@ -206,8 +206,8 @@ async function cmdCurrent(): Promise<void> {
     if (profile?.description) console.log(`  ${profile.description}`);
   }
   console.log(
-    `Idle skill context: ~${stats.currentActiveTokens} tokens active ` +
-      `(of ~${stats.totalTokens} if all skills enabled, ` +
+    `Idle item context: ~${stats.currentActiveTokens} tokens active ` +
+      `(of ~${stats.totalTokens} if all items enabled, ` +
       `saving ~${stats.totalTokens - stats.currentActiveTokens}).`
   );
 }
@@ -247,8 +247,8 @@ async function cmdShow(name: string | undefined): Promise<void> {
   console.log(JSON.stringify(profile, null, 2));
   if (saving) {
     console.log(
-      `\nEstimated idle skill context when active: ~${saving.activeTokens} tokens ` +
-        `(saves ~${saving.savedTokens} vs. all skills enabled).`
+      `\nEstimated idle item context when active: ~${saving.activeTokens} tokens ` +
+        `(saves ~${saving.savedTokens} vs. all items enabled).`
     );
   }
 }
@@ -292,13 +292,15 @@ async function cmdSnapshot(name: string | undefined, description?: string): Prom
   for (const s of settings.enabledMcpjsonServers ?? []) mcpServers[s] = true;
   for (const s of settings.disabledMcpjsonServers ?? []) mcpServers[s] = false;
 
+  // An empty list means "leave this kind untouched" at apply time, so omit
+  // kinds with nothing active instead of recording lists that can't round-trip.
   const profile: Profile = {
     name,
     description: description ?? `Snapshot taken ${new Date().toISOString()}`,
     plugins: { ...(settings.enabledPlugins ?? {}) },
-    skills,
-    agents,
-    commands,
+    ...(skills.length > 0 ? { skills } : {}),
+    ...(agents.length > 0 ? { agents } : {}),
+    ...(commands.length > 0 ? { commands } : {}),
     mcpServers,
   };
   await saveProfile(profile);
