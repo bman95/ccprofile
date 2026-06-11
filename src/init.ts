@@ -144,5 +144,7 @@ export async function runInit(): Promise<void> {
     console.log("  No profile suggestions — create your own with: ccprofile create <name>");
   }
 
+  console.log("\nTip: run \"ccprofile stats\" to see how many tokens each skill costs,");
+  console.log("or \"ccprofile snapshot <name>\" to save your current setup as a profile.");
   console.log("\nDone! Run \"ccprofile --help\" to get started.");
 }
