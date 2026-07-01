@@ -130,6 +130,10 @@ cd ~/work/docs-repo/src
 ccprofile auto          # activates "docs" (no-op if already active)
 ```
 
+`auto` applies plugin/MCP changes to the **global** `~/.claude/settings.json`
+only; it has no `--project` mode. If you need project-level settings changes,
+activate explicitly with `ccprofile use <profile> --project`.
+
 To make this automatic, run it before each session — e.g. from a shell alias:
 
 ```bash
@@ -178,15 +182,28 @@ that exact baseline — so deactivating is fully reversible, even for plugins an
 MCP servers a profile turned off. Switching directly between profiles preserves
 the original baseline.
 
+The baseline captures **one** settings file — either the global
+`~/.claude/settings.json` or a single project's `.claude/settings.json` (see
+`--project` below). To keep `reset` able to fully undo everything, ccprofile
+**refuses** to activate a profile against a different settings target while
+another is still active (for example, a global activation while a `--project`
+one is live). Run `ccprofile reset` first, then switch targets.
+
 Profiles are stored as JSON files in `~/.claude/profiles/`.
 
 ### Project-level
 
-Use `--project` to apply changes to the current project's `.claude/settings.json` instead of global:
+Use `--project` to apply the settings changes (plugins, MCP servers) to the
+current project's `.claude/settings.json` instead of global:
 
 ```bash
 ccprofile use docs --project
 ```
+
+Skills, agents, and slash commands always live in `~/.claude/` and are toggled
+globally regardless of `--project`. `--project` is supported by `use`; `auto`
+always targets the global settings file. Reset first before switching between a
+project target and the global one (see above).
 
 ### Companion skill
 
@@ -197,7 +214,7 @@ After running `ccprofile init`, a `/profile-edit` slash command becomes availabl
 - **Changes require a Claude Code restart.** Skills and plugins are loaded at session start, not mid-session.
 - **Backups**: Before modifying `settings.json`, a timestamped backup is created automatically (keeps the 5 most recent).
 - **Safe writes**: Uses atomic file writes to prevent corruption from concurrent access.
-- **Non-destructive**: `ccprofile reset` restores the baseline captured before your first activation — skills, plugin toggles, and MCP server lists all return to their original state.
+- **Non-destructive**: `ccprofile reset` restores the baseline captured before your first activation — skills, plugin toggles, and MCP server lists all return to their original state. The baseline tracks a single settings file, so activating against a different target (global vs. `--project`) while a profile is active is refused until you `reset`.
 
 ## Use from within Claude Code
 
@@ -212,6 +229,29 @@ Since this is a CLI tool, you can run it directly from a Claude Code session wit
 The whole point is to **save tokens**. Running profile management through AI would defeat the purpose. This tool runs entirely in your shell — zero API calls, zero token consumption.
 
 The optional `/profile-edit` companion skill exists only for when you want AI help editing profiles. It uses `disable-model-invocation: true`, so it costs zero tokens until you explicitly invoke it.
+
+## Caveats / compatibility
+
+- **Coupled to Claude Code internals.** ccprofile relies on conventions that
+  Claude Code does not formally document: that active skills/agents/commands
+  live in `~/.claude/{skills,agents,commands}/` and are disabled by moving them
+  to sibling `*-disabled/` directories, and that plugins and MCP servers are
+  toggled through the `enabledPlugins`, `enabledMcpjsonServers`, and
+  `disabledMcpjsonServers` keys in `settings.json`. If a Claude Code update
+  changes how these are loaded or stored, ccprofile can silently stop having any
+  effect until it is updated to match. It is not affiliated with Anthropic.
+- **Token estimates are approximate.** `ccprofile stats` estimates idle cost
+  from a `~4 chars/token` heuristic over each item's frontmatter, and it only
+  parses single-line `key: value` frontmatter — folded or multi-line
+  descriptions are undercounted. Context contributed by plugins and MCP servers
+  is **not** counted at all. Treat the numbers as relative guidance for deciding
+  what to disable, not as an exact accounting of your context window.
+- **Changes apply on the next session.** Skills and plugins are loaded at
+  session start, so any switch takes effect only after you restart Claude Code.
+- **No concurrency locking.** Running two ccprofile commands at once (for
+  example a `SessionStart` hook racing a manual invocation) can interleave file
+  moves. It surfaces "exists in both" warnings when it detects this, but does
+  not prevent it; avoid running overlapping activations.
 
 ## License
 
