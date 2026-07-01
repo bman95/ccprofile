@@ -85,62 +85,46 @@ export async function runInit(): Promise<void> {
     }
   }
 
-  // Suggestions
+  // Suggestions — group the skills actually installed on this machine by
+  // generic capability keywords. Nothing here is hardcoded to a specific
+  // person's setup; the groupings adapt to whatever skills are present.
   console.log("\n--- Suggested profiles ---\n");
 
-  const docSkills = activeSkills.filter((s) =>
-    ["pdf", "docx", "pptx", "xlsx", "doc-coauthoring"].includes(s)
-  );
-  const browserSkills = activeSkills.filter((s) =>
-    ["playwright-cli"].includes(s)
-  );
-  const githubSkills = activeSkills.filter((s) =>
-    ["gh-issue", "issue-workflow", "fix-codex-comments"].includes(s)
-  );
-  const travelSkills = activeSkills.filter((s) =>
-    ["travel-router", "eu-directive-transposition-tracker"].includes(s)
-  );
+  const CATEGORIES: Array<{ name: string; label: string; keywords: string[] }> = [
+    {
+      name: "docs",
+      label: "Document processing",
+      keywords: ["pdf", "doc", "docx", "pptx", "xlsx", "word", "excel", "powerpoint", "slide", "sheet"],
+    },
+    {
+      name: "browser",
+      label: "Browser automation",
+      keywords: ["browser", "playwright", "puppeteer", "selenium", "scrape"],
+    },
+    {
+      name: "github",
+      label: "Git & GitHub workflows",
+      keywords: ["github", "gitlab", "issue", "pull-request", "commit", "changelog"],
+    },
+  ];
 
-  if (docSkills.length > 0) {
-    console.log(`  docs: ${docSkills.join(", ")}`);
-    console.log(`    ccprofile create docs "Document processing"`);
-    for (const s of docSkills) {
-      console.log(`    ccprofile add docs skill ${s}`);
+  let anySuggestions = false;
+  for (const cat of CATEGORIES) {
+    const matched = activeSkills.filter((s) => {
+      const lower = s.toLowerCase();
+      return cat.keywords.some((k) => lower.includes(k));
+    });
+    if (matched.length === 0) continue;
+    anySuggestions = true;
+    console.log(`  ${cat.name}: ${matched.join(", ")}`);
+    console.log(`    ccprofile create ${cat.name} "${cat.label}"`);
+    for (const s of matched) {
+      console.log(`    ccprofile add ${cat.name} skill ${s}`);
     }
     console.log();
   }
 
-  if (browserSkills.length > 0) {
-    console.log(`  browser: ${browserSkills.join(", ")}`);
-    console.log(`    ccprofile create browser "Browser automation"`);
-    for (const s of browserSkills) {
-      console.log(`    ccprofile add browser skill ${s}`);
-    }
-    console.log();
-  }
-
-  if (githubSkills.length > 0) {
-    console.log(`  github: ${githubSkills.join(", ")}`);
-    console.log(`    ccprofile create github "GitHub workflows"`);
-    for (const s of githubSkills) {
-      console.log(`    ccprofile add github skill ${s}`);
-    }
-    console.log();
-  }
-
-  if (travelSkills.length > 0) {
-    console.log(`  travel: ${travelSkills.join(", ")}`);
-    console.log(`    ccprofile create travel "Travel & research"`);
-    for (const s of travelSkills) {
-      console.log(`    ccprofile add travel skill ${s}`);
-    }
-    console.log();
-  }
-
-  const noSuggestions = [docSkills, browserSkills, githubSkills, travelSkills].every(
-    (g) => g.length === 0
-  );
-  if (noSuggestions) {
+  if (!anySuggestions) {
     console.log("  No profile suggestions — create your own with: ccprofile create <name>");
   }
 
