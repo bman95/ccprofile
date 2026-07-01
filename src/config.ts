@@ -6,11 +6,25 @@ import writeFileAtomic from "write-file-atomic";
 export async function readJson<T = Record<string, unknown>>(
   filePath: string
 ): Promise<T | null> {
+  let raw: string;
   try {
-    const raw = await readFile(filePath, "utf-8");
+    raw = await readFile(filePath, "utf-8");
+  } catch (err) {
+    // A missing file is a normal "nothing configured yet" state; anything else
+    // (e.g. a permission error) should surface rather than be treated as empty.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  try {
     return JSON.parse(raw) as T;
   } catch {
-    return null;
+    // The file exists but is unparseable. Returning {} here would let a later
+    // write silently overwrite the user's real (hand-corrupted) settings, so
+    // abort loudly instead and point at the automatic backups.
+    throw new Error(
+      `Cannot parse ${filePath}: the file exists but contains invalid JSON. ` +
+        `Fix it by hand or restore a ".bak" backup from the same directory, then retry.`
+    );
   }
 }
 

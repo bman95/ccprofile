@@ -328,3 +328,83 @@ test("switching profiles does not corrupt the baseline", () => {
     assert.ok(existsSync(join(claudeDir, "skills", s)), `${s} restored to original`);
   }
 });
+
+test("unknown flags are rejected before any mutation", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+
+  // --dryrun is a typo for --dry-run; it must not perform a real activation.
+  const res = run(["use", "docs", "--dryrun"], { allowFail: true });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /Unknown flag: --dryrun/);
+
+  assert.ok(!existsSync(join(claudeDir, "skills-disabled", "docx")), "no skills moved");
+  assert.equal(run(["current"]).stdout.includes("No active profile"), true);
+});
+
+test("mixing --project and global activations is refused, keeping reset reversible", () => {
+  const proj = join(HOME, "proj");
+  mkdirSync(join(proj, ".claude"), { recursive: true });
+  const projSettingsFile = join(proj, ".claude", "settings.json");
+  writeFileSync(projSettingsFile, JSON.stringify({ enabledPlugins: { "p@x": true } }, null, 2));
+  const projSettings = () => JSON.parse(readFileSync(projSettingsFile, "utf-8"));
+
+  run(["create", "a"]);
+  run(["add", "a", "plugin", "p@x", "--disable"]);
+  run(["create", "b"]);
+  run(["add", "b", "plugin", "frontend-design@x", "--disable"]);
+
+  // First activation targets the PROJECT settings file.
+  run(["use", "a", "--project"], { cwd: proj });
+  assert.equal(projSettings().enabledPlugins["p@x"], false, "project plugin disabled");
+
+  const globalBefore = readFileSync(join(claudeDir, "settings.json"), "utf-8");
+
+  // Second activation targets the GLOBAL settings file — must be refused.
+  const res = run(["use", "b"], { allowFail: true });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /reset/i);
+
+  // The global settings file is byte-identical: no mutation happened.
+  assert.equal(readFileSync(join(claudeDir, "settings.json"), "utf-8"), globalBefore);
+  assert.equal(readSettings().enabledPlugins["frontend-design@x"], true, "global plugin untouched");
+
+  // reset fully restores the (project) file the baseline captured.
+  run(["reset"]);
+  assert.equal(projSettings().enabledPlugins["p@x"], true, "project settings restored by reset");
+});
+
+test("corrupted settings.json aborts the command without overwriting it", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+
+  const settingsFile = join(claudeDir, "settings.json");
+  const corrupt = "{ this is not valid json ]";
+  writeFileSync(settingsFile, corrupt);
+
+  const res = run(["use", "docs"], { allowFail: true });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /invalid JSON/i);
+
+  // The user's corrupted file is left exactly as they wrote it.
+  assert.equal(readFileSync(settingsFile, "utf-8"), corrupt);
+  assert.equal(run(["current"]).stdout.includes("No active profile"), true);
+});
+
+test("reset --dry-run uses 'would' phrasing and writes nothing", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["use", "docs"]);
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")), "docx disabled by use");
+  const baselineFile = join(claudeDir, "profiles", ".baseline.json");
+  assert.ok(existsSync(baselineFile), "baseline captured by use");
+
+  const res = run(["reset", "--dry-run"]);
+  assert.match(res.stdout, /[Ww]ould/);
+  assert.doesNotMatch(res.stdout, /Restart Claude Code/);
+
+  // Nothing was restored and the baseline file is still present.
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")), "docx still disabled (dry-run)");
+  assert.ok(existsSync(baselineFile), "baseline untouched by dry-run");
+  assert.match(run(["current"]).stdout, /Active profile: docs/);
+});

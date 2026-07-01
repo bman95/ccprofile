@@ -26,7 +26,26 @@ export async function applyProfile(
   // Capture a restore point before the first mutation so reset is reversible.
   // The baseline remembers which settings file it captured, so reset restores
   // the same file this activation modifies.
+  //
+  // The baseline holds a single settings file. If a profile is already active
+  // against one settings target (e.g. a project settings.json via --project),
+  // activating another profile against a *different* target (e.g. the global
+  // settings.json) would let reset restore only one of them, silently leaving
+  // the other's plugin/MCP changes in place. Refuse that mix before mutating so
+  // the reversibility guarantee holds; the user can reset first and switch.
   if (!opts.dryRun) {
+    const existing = await getBaseline();
+    if (existing) {
+      const baselinePath = existing.settingsPath ?? paths.settingsJson;
+      if (baselinePath !== settingsPath) {
+        throw new Error(
+          `A profile is already active against ${baselinePath}, but this activation ` +
+            `targets ${settingsPath}. Mixing project and global targets would make ` +
+            `reset unable to fully restore both. Run "ccprofile reset" first, then ` +
+            `activate against the new target.`
+        );
+      }
+    }
     await ensureBaseline(settingsPath);
   }
 
@@ -84,14 +103,20 @@ export async function resetProfile(opts: { dryRun?: boolean } = {}): Promise<str
       await clearBaseline();
       await clearActiveProfile();
     }
-    changes.push("Restored original environment (skills, agents, commands, plugins, MCP servers)");
+    changes.push(
+      opts.dryRun
+        ? "Would restore original environment (skills, agents, commands, plugins, MCP servers)"
+        : "Restored original environment (skills, agents, commands, plugins, MCP servers)"
+    );
   } else {
     // Legacy fallback: no baseline recorded — re-enable everything disabled.
     for (const spec of ALL_KINDS) {
       changes.push(...(await syncItems(spec, new Set(await allKnownItems(spec)), opts.dryRun)));
     }
     if (!opts.dryRun) await clearActiveProfile();
-    changes.push("Profile cleared — all items restored");
+    changes.push(
+      opts.dryRun ? "Would clear profile — all items restored" : "Profile cleared — all items restored"
+    );
   }
 
   return changes;

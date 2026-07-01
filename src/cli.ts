@@ -31,6 +31,21 @@ const dryRun = flags.has("--dry-run");
 const json = flags.has("--json");
 const projectDir = projectFlag ? cwd() : undefined;
 
+// The full set of flags any command understands. Because ccprofile rearranges
+// files under ~/.claude, an unrecognized flag (e.g. the typo "--dryrun") must
+// be rejected up front rather than silently ignored — otherwise a mistyped
+// "--dry-run" would perform a real activation.
+const KNOWN_FLAGS = new Set([
+  "--project",
+  "--dry-run",
+  "--json",
+  "--force",
+  "--enable",
+  "--disable",
+  "--help",
+  "--version",
+]);
+
 const HELP = `
 ccprofile — Profile manager for Claude Code
 
@@ -59,12 +74,15 @@ COMMANDS
   unbind [dir]            Remove a directory binding
   bindings                List directory bindings
   auto                    Activate the profile bound to the current directory
+                          (applies to global settings only; use "use --project"
+                          for project-level plugin/MCP changes)
 
   export <name> [file]    Export a profile as JSON (stdout if no file)
   import <file|->         Import a profile from JSON file or stdin [--force]
 
 OPTIONS
   --project               Apply to project-level settings instead of global
+                          (supported by "use"; "auto" is always global)
   --dry-run               Preview changes without writing anything
   --json                  Machine-readable output (use/current/list/show/stats/reset)
   --force                 Allow import to overwrite an existing profile
@@ -91,6 +109,12 @@ function out(human: string, data: unknown): void {
 }
 
 async function main(): Promise<void> {
+  const unknownFlag = args.find((a) => a.startsWith("--") && !KNOWN_FLAGS.has(a));
+  if (unknownFlag) {
+    console.error(`Unknown flag: ${unknownFlag}\nRun "ccprofile --help" for usage.`);
+    exit(1);
+  }
+
   if (!command || command === "--help" || command === "-h") {
     console.log(HELP);
     return;
