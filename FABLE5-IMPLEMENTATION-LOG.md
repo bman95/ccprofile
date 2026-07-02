@@ -223,3 +223,15 @@ Per-step verification:
   to `package.json` `files` (optional follow-up). Verified.
 
 No regressions found. Self-report is accurate; nothing was left unverified.
+
+## Commit Verification
+
+Independent verification (2026-07-02) of the four overnight commits (`7c16bb0`, `eb4a76f`, `3b9a837`, `bf647d5`):
+
+- **Messages:** English, imperative, no AI/assistant references, no Co-Authored-By lines. Sole author/committer: repo owner identity.
+- **Content:** `git show --stat` per commit matches reported file counts (4/1/2/3). Diff scanned for secret patterns (keys, tokens, credentials) — none; all matches were benign uses of the word "token". No files > 5 MB, no databases/exports/caches; `git ls-files` shows only source, tests, and docs.
+- **No push:** `origin/master` reflog last moved by the earlier pull fast-forward; branch is ahead 4 with no remote update tonight. Reflog shows only the four commits — no reset, amend, or branch switching.
+- **Working tree:** `git status --short` clean; only ignored `dist/` and `node_modules/` present, matching the reported empty `left_uncommitted`.
+- **Separation:** safety hardening + tests, init-suggestions rework, README/CHANGELOG docs, and FABLE5 project docs are cleanly split across the four commits.
+
+Verdict: OK. (This section is intentionally left uncommitted.)
