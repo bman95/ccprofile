@@ -8,16 +8,20 @@ import {
   deleteProfile,
   renameProfile,
   getActiveProfile,
+  normalizeProfile,
 } from "./profiles.js";
 import { applyProfile, resetProfile } from "./apply.js";
 import { runInit } from "./init.js";
 import { computeStats } from "./stats.js";
 import { listSkillDirs } from "./skills.js";
-import { listItemNames, AGENT_KIND, COMMAND_KIND } from "./items.js";
+import { listItemNames, ALL_KINDS, AGENT_KIND, COMMAND_KIND } from "./items.js";
 import { getBindings, setBinding, removeBinding, findBinding } from "./bindings.js";
 import { validateProfileShape } from "./validate.js";
 import { readJson } from "./config.js";
 import { paths } from "./paths.js";
+import { withLock } from "./lock.js";
+import { runDoctor } from "./doctor.js";
+import { CliError } from "./errors.js";
 import type { Profile, ClaudeSettings } from "./types.js";
 
 const args = argv.slice(2);
@@ -31,20 +35,32 @@ const dryRun = flags.has("--dry-run");
 const json = flags.has("--json");
 const projectDir = projectFlag ? cwd() : undefined;
 
-// The full set of flags any command understands. Because ccprofile rearranges
-// files under ~/.claude, an unrecognized flag (e.g. the typo "--dryrun") must
-// be rejected up front rather than silently ignored — otherwise a mistyped
-// "--dry-run" would perform a real activation.
-const KNOWN_FLAGS = new Set([
-  "--project",
-  "--dry-run",
-  "--json",
-  "--force",
-  "--enable",
-  "--disable",
-  "--help",
-  "--version",
-]);
+// Flags each command understands. Because ccprofile rearranges files under
+// ~/.claude, both an unrecognized flag (the typo "--dryrun") and a recognized
+// flag on the wrong command ("use --force") must be rejected up front rather
+// than silently ignored.
+const COMMAND_FLAGS: Record<string, string[]> = {
+  init: [],
+  use: ["--project", "--dry-run", "--json"],
+  current: ["--json"],
+  list: ["--json"],
+  show: ["--json"],
+  create: ["--json"],
+  snapshot: ["--json"],
+  rename: ["--json"],
+  delete: ["--json"],
+  reset: ["--dry-run", "--json"],
+  stats: ["--json"],
+  add: ["--enable", "--disable", "--json"],
+  remove: ["--json"],
+  bind: ["--json"],
+  unbind: ["--json"],
+  bindings: ["--json"],
+  auto: ["--dry-run", "--json"],
+  export: [],
+  import: ["--force", "--json"],
+  doctor: ["--json"],
+};
 
 const HELP = `
 ccprofile — Profile manager for Claude Code
@@ -64,6 +80,7 @@ COMMANDS
   delete <name>           Delete a profile
   reset                   Deactivate current profile, restore the original state
   stats                   Show per-item token cost and per-profile savings
+  doctor                  Check the environment and ccprofile state for problems
 
   add <profile> plugin <name> [--enable|--disable]
   add <profile> <skill|agent|command> <name>
@@ -84,7 +101,7 @@ OPTIONS
   --project               Apply to project-level settings instead of global
                           (supported by "use"; "auto" is always global)
   --dry-run               Preview changes without writing anything
-  --json                  Machine-readable output (use/current/list/show/stats/reset)
+  --json                  Machine-readable output
   --force                 Allow import to overwrite an existing profile
   --help, -h              Show this help message
   --version, -v           Show version
@@ -100,31 +117,55 @@ EXAMPLES
   ccprofile stats
 `;
 
+/**
+ * Strip C0/C1 control characters (except tab/newline) from strings that may
+ * contain untrusted content — imported profile descriptions, filesystem
+ * names — so they cannot smuggle terminal escape sequences into output.
+ */
+function clean(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "");
+}
+
 function out(human: string, data: unknown): void {
   if (json) {
     console.log(JSON.stringify(data, null, 2));
   } else if (human) {
-    console.log(human);
+    console.log(clean(human));
   }
 }
 
-async function main(): Promise<void> {
-  const unknownFlag = args.find((a) => a.startsWith("--") && !KNOWN_FLAGS.has(a));
-  if (unknownFlag) {
-    console.error(`Unknown flag: ${unknownFlag}\nRun "ccprofile --help" for usage.`);
-    exit(1);
-  }
+/** Run a mutation under the activation lock; dry runs read only and skip it. */
+function locked<T>(fn: () => Promise<T>): Promise<T> {
+  return dryRun ? fn() : withLock(fn);
+}
 
-  if (!command || command === "--help" || command === "-h") {
+async function main(): Promise<void> {
+  if (!command || command === "--help" || command === "-h" || flags.has("--help")) {
     console.log(HELP);
     return;
   }
 
-  if (command === "--version" || command === "-v") {
+  if (command === "--version" || command === "-v" || flags.has("--version")) {
     const { readFile } = await import("node:fs/promises");
     const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf-8"));
     console.log(pkg.version);
     return;
+  }
+
+  const allowed = COMMAND_FLAGS[command];
+  if (allowed) {
+    const bad = args.find((a) => a.startsWith("--") && !allowed.includes(a));
+    if (bad) {
+      const known = Object.values(COMMAND_FLAGS).some((fs) => fs.includes(bad));
+      console.error(
+        known
+          ? `Flag ${bad} is not supported by "ccprofile ${command}".` +
+              (allowed.length > 0 ? ` Supported: ${allowed.join(", ")}` : " It takes no flags.")
+          : `Unknown flag: ${bad}\nRun "ccprofile --help" for usage.`
+      );
+      exit(1);
+    }
   }
 
   switch (command) {
@@ -161,6 +202,9 @@ async function main(): Promise<void> {
     case "stats":
       await cmdStats();
       break;
+    case "doctor":
+      await cmdDoctor();
+      break;
     case "add":
       await cmdAdd(positionals.slice(1));
       break;
@@ -196,14 +240,14 @@ async function cmdUse(name: string | undefined): Promise<void> {
     console.error("Usage: ccprofile use <name>");
     exit(1);
   }
-  const { applied, changes } = await applyProfile(name, { projectDir, dryRun });
+  const { applied, changes } = await locked(() => applyProfile(name, { projectDir, dryRun }));
   if (json) {
     out("", { profile: applied, dryRun, changes });
     return;
   }
   console.log(`Profile "${applied}" ${dryRun ? "(dry run) would be activated" : "activated"}.`);
   if (changes.length > 0) {
-    for (const c of changes) console.log(`  ${c}`);
+    for (const c of changes) console.log(clean(`  ${c}`));
   } else {
     console.log("  (no changes — already in this state)");
   }
@@ -227,7 +271,7 @@ async function cmdCurrent(): Promise<void> {
     console.log("No active profile.");
   } else {
     console.log(`Active profile: ${active}`);
-    if (profile?.description) console.log(`  ${profile.description}`);
+    if (profile?.description) console.log(clean(`  ${profile.description}`));
   }
   console.log(
     `Idle item context: ~${stats.currentActiveTokens} tokens active ` +
@@ -286,15 +330,14 @@ async function cmdCreate(name: string | undefined, description?: string): Promis
     console.error(`Profile "${name}" already exists.`);
     exit(1);
   }
+  // A fresh profile declares nothing: every kind is left untouched until the
+  // user adds items. (An empty LIST would mean "disable everything" since v2.)
   const profile: Profile = {
     name,
     description: description ?? "",
-    plugins: {},
-    skills: [],
-    mcpServers: {},
   };
   await saveProfile(profile);
-  console.log(`Profile "${name}" created.`);
+  out(`Profile "${name}" created.`, { ok: true, created: name });
 }
 
 async function cmdSnapshot(name: string | undefined, description?: string): Promise<void> {
@@ -316,23 +359,24 @@ async function cmdSnapshot(name: string | undefined, description?: string): Prom
   for (const s of settings.enabledMcpjsonServers ?? []) mcpServers[s] = true;
   for (const s of settings.disabledMcpjsonServers ?? []) mcpServers[s] = false;
 
-  // An empty list means "leave this kind untouched" at apply time, so omit
-  // kinds with nothing active instead of recording lists that can't round-trip.
+  // A snapshot records the exact current state of every kind — including
+  // empty ones, since v2 semantics let an empty list round-trip as "none".
   const profile: Profile = {
     name,
     description: description ?? `Snapshot taken ${new Date().toISOString()}`,
     plugins: { ...(settings.enabledPlugins ?? {}) },
-    ...(skills.length > 0 ? { skills } : {}),
-    ...(agents.length > 0 ? { agents } : {}),
-    ...(commands.length > 0 ? { commands } : {}),
+    skills,
+    agents,
+    commands,
     mcpServers,
   };
   await saveProfile(profile);
-  console.log(
+  out(
     `Profile "${name}" created from current environment ` +
       `(${skills.length} skills, ${agents.length} agents, ${commands.length} commands, ` +
       `${Object.keys(profile.plugins ?? {}).length} plugins, ` +
-      `${Object.keys(mcpServers).length} MCP servers).`
+      `${Object.keys(mcpServers).length} MCP servers).`,
+    { ok: true, created: name, skills, agents, commands }
   );
 }
 
@@ -342,7 +386,7 @@ async function cmdRename(from: string | undefined, to: string | undefined): Prom
     exit(1);
   }
   await renameProfile(from, to);
-  console.log(`Profile "${from}" renamed to "${to}".`);
+  out(`Profile "${from}" renamed to "${to}".`, { ok: true, renamed: { from, to } });
 }
 
 async function cmdDelete(name: string | undefined): Promise<void> {
@@ -351,7 +395,7 @@ async function cmdDelete(name: string | undefined): Promise<void> {
     exit(1);
   }
   if (await deleteProfile(name)) {
-    console.log(`Profile "${name}" deleted.`);
+    out(`Profile "${name}" deleted.`, { ok: true, deleted: name });
   } else {
     console.error(`Profile "${name}" not found.`);
     exit(1);
@@ -359,12 +403,12 @@ async function cmdDelete(name: string | undefined): Promise<void> {
 }
 
 async function cmdReset(): Promise<void> {
-  const changes = await resetProfile({ dryRun });
+  const changes = await locked(() => resetProfile({ dryRun }));
   if (json) {
     out("", { dryRun, changes });
     return;
   }
-  for (const c of changes) console.log(`  ${c}`);
+  for (const c of changes) console.log(clean(`  ${c}`));
   if (!dryRun) console.log("\nRestart Claude Code for changes to take effect.");
 }
 
@@ -379,12 +423,16 @@ async function cmdStats(): Promise<void> {
   for (const s of sorted) {
     const mark = s.active ? "[on] " : "[off]";
     console.log(
-      `  ${mark} ${String(s.idleTokens).padStart(5)} tok  ${s.kind.padEnd(7)}  ${s.name}`
+      clean(`  ${mark} ${String(s.idleTokens).padStart(5)} tok  ${s.kind.padEnd(7)}  ${s.name}`)
     );
   }
   console.log(
     `\n  Total if all enabled: ~${stats.totalTokens} tokens` +
       `\n  Currently active:     ~${stats.currentActiveTokens} tokens\n`
+  );
+  console.log(
+    "  Note: context contributed by plugins and MCP servers is NOT counted\n" +
+      "  (tool schemas are only known at runtime); it is often the largest share.\n"
   );
 
   if (stats.profiles.length > 0) {
@@ -395,6 +443,28 @@ async function cmdStats(): Promise<void> {
       );
     }
   }
+}
+
+async function cmdDoctor(): Promise<void> {
+  const results = await runDoctor();
+  const failed = results.some((r) => r.level === "fail");
+  if (json) {
+    out("", { ok: !failed, results });
+  } else {
+    for (const r of results) {
+      const tag = r.level === "ok" ? "[ok]  " : r.level === "warn" ? "[warn]" : "[FAIL]";
+      console.log(clean(`  ${tag} ${r.message}`));
+    }
+    const warns = results.filter((r) => r.level === "warn").length;
+    console.log(
+      failed
+        ? "\nProblems found. Fix the [FAIL] items above."
+        : warns > 0
+          ? `\nHealthy overall, ${warns} warning(s).`
+          : "\nEverything looks healthy."
+    );
+  }
+  if (failed) exit(1);
 }
 
 const LIST_TYPES = { skill: "skills", agent: "agents", command: "commands" } as const;
@@ -413,26 +483,37 @@ async function cmdAdd(rest: string[]): Promise<void> {
   }
 
   const isDisable = flags.has("--disable");
+  let warning: string | undefined;
 
   if (type === "plugin") {
     profile.plugins ??= {};
     profile.plugins[name] = !isDisable;
-    console.log(`Added plugin "${name}" (${isDisable ? "disabled" : "enabled"}) to profile "${profileName}".`);
   } else if (type === "mcp") {
     profile.mcpServers ??= {};
     profile.mcpServers[name] = !isDisable;
-    console.log(`Added MCP server "${name}" (${isDisable ? "disabled" : "enabled"}) to profile "${profileName}".`);
   } else if (type in LIST_TYPES) {
     const field = LIST_TYPES[type as keyof typeof LIST_TYPES];
     profile[field] ??= [];
     if (!profile[field]!.includes(name)) profile[field]!.push(name);
-    console.log(`Added ${type} "${name}" to profile "${profileName}".`);
+    const spec = ALL_KINDS.find((s) => s.plural === field)!;
+    const known = new Set([
+      ...(await listItemNames(spec.activeDir, spec.dirsOnly)),
+      ...(await listItemNames(spec.disabledDir, spec.dirsOnly)),
+    ]);
+    if (!known.has(name)) {
+      warning = `Warning: no ${type} named "${name}" is currently installed (kept anyway — it may be installed later).`;
+    }
   } else {
     console.error(`Unknown type: ${type}. Use "plugin", "skill", "agent", "command", or "mcp".`);
     exit(1);
   }
 
   await saveProfile(profile);
+  const verb = type === "plugin" || type === "mcp" ? ` (${isDisable ? "disabled" : "enabled"})` : "";
+  out(
+    `Added ${type} "${name}"${verb} to profile "${profileName}".` + (warning ? `\n${warning}` : ""),
+    { ok: true, profile: profileName, type, name, warning }
+  );
 }
 
 async function cmdRemove(rest: string[]): Promise<void> {
@@ -450,20 +531,23 @@ async function cmdRemove(rest: string[]): Promise<void> {
 
   if (type === "plugin") {
     if (profile.plugins) delete profile.plugins[name];
-    console.log(`Removed plugin "${name}" from profile "${profileName}".`);
   } else if (type === "mcp") {
     if (profile.mcpServers) delete profile.mcpServers[name];
-    console.log(`Removed MCP server "${name}" from profile "${profileName}".`);
   } else if (type in LIST_TYPES) {
     const field = LIST_TYPES[type as keyof typeof LIST_TYPES];
     if (profile[field]) profile[field] = profile[field]!.filter((s) => s !== name);
-    console.log(`Removed ${type} "${name}" from profile "${profileName}".`);
   } else {
     console.error(`Unknown type: ${type}. Use "plugin", "skill", "agent", "command", or "mcp".`);
     exit(1);
   }
 
   await saveProfile(profile);
+  out(`Removed ${type} "${name}" from profile "${profileName}".`, {
+    ok: true,
+    profile: profileName,
+    type,
+    name,
+  });
 }
 
 async function cmdBind(profileName: string | undefined, dir: string | undefined): Promise<void> {
@@ -476,14 +560,16 @@ async function cmdBind(profileName: string | undefined, dir: string | undefined)
     exit(1);
   }
   const abs = await setBinding(dir ?? cwd(), profileName);
-  console.log(`Bound ${abs} → profile "${profileName}".`);
-  console.log(`Run "ccprofile auto" from inside that directory to activate it.`);
+  out(
+    `Bound ${abs} → profile "${profileName}".\nRun "ccprofile auto" from inside that directory to activate it.`,
+    { ok: true, dir: abs, profile: profileName }
+  );
 }
 
 async function cmdUnbind(dir: string | undefined): Promise<void> {
   const target = dir ?? cwd();
   if (await removeBinding(target)) {
-    console.log(`Removed binding for ${target}.`);
+    out(`Removed binding for ${target}.`, { ok: true, dir: target });
   } else {
     console.error(`No binding found for ${target}.`);
     exit(1);
@@ -514,22 +600,25 @@ async function cmdAuto(): Promise<void> {
     else console.log("No profile bound to this directory.");
     return;
   }
+  // Always reconcile, even when the marker already names this profile: the
+  // profile may have been edited or the environment may have drifted since
+  // activation, and re-applying an in-sync profile is a cheap no-op.
   const active = await getActiveProfile();
-  if (active === match.profile && !dryRun) {
-    if (json) out("", { matched: match, alreadyActive: true });
-    else console.log(`Profile "${match.profile}" already active (bound to ${match.dir}).`);
+  const { changes } = await locked(() => applyProfile(match.profile, { dryRun }));
+  const alreadyActive = active === match.profile && changes.length === 0;
+  if (json) {
+    out("", { matched: match, dryRun, alreadyActive, changes });
     return;
   }
-  const { changes } = await applyProfile(match.profile, { dryRun });
-  if (json) {
-    out("", { matched: match, dryRun, changes });
+  if (alreadyActive) {
+    console.log(`Profile "${match.profile}" already active (bound to ${match.dir}).`);
     return;
   }
   console.log(
     `Profile "${match.profile}" ${dryRun ? "(dry run) would be activated" : "activated"} ` +
       `(bound to ${match.dir}).`
   );
-  for (const c of changes) console.log(`  ${c}`);
+  for (const c of changes) console.log(clean(`  ${c}`));
   if (!dryRun && changes.length > 0) console.log("\nRestart Claude Code for changes to take effect.");
 }
 
@@ -572,18 +661,36 @@ async function cmdImport(file: string | undefined): Promise<void> {
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("Invalid profile: input is not valid JSON.");
+    throw new CliError("Invalid profile: input is not valid JSON.");
   }
   validateProfileShape(data);
   if ((await getProfile(data.name)) && !flags.has("--force")) {
     console.error(`Profile "${data.name}" already exists. Use --force to overwrite.`);
     exit(1);
   }
-  await saveProfile(data);
-  console.log(`Profile "${data.name}" imported.`);
+  // Copy only the known fields: imported JSON is untrusted, and arbitrary
+  // extra keys must not ride along into ~/.claude/profiles/.
+  const profile: Profile = {
+    name: data.name,
+    ...(data.version !== undefined ? { version: data.version } : {}),
+    ...(data.description !== undefined ? { description: data.description } : {}),
+    ...(data.plugins !== undefined ? { plugins: data.plugins } : {}),
+    ...(data.skills !== undefined ? { skills: data.skills } : {}),
+    ...(data.agents !== undefined ? { agents: data.agents } : {}),
+    ...(data.commands !== undefined ? { commands: data.commands } : {}),
+    ...(data.mcpServers !== undefined ? { mcpServers: data.mcpServers } : {}),
+  };
+  await saveProfile(normalizeProfile(profile));
+  out(`Profile "${data.name}" imported.`, { ok: true, imported: data.name });
 }
 
 main().catch((err) => {
-  console.error(err.message);
+  // Expected, user-facing failures print their message; anything else is a
+  // bug and gets the full stack so it can actually be reported and fixed.
+  if (err instanceof CliError) {
+    console.error(err.message);
+  } else {
+    console.error(err?.stack ?? String(err));
+  }
   exit(1);
 });

@@ -39,6 +39,7 @@ ccprofile import <file|->         # Import profile JSON (--force to overwrite)
 
 ccprofile use <name> [--dry-run]  # Activate profile (preview with --dry-run)
 ccprofile reset                   # Restore the original baseline environment
+ccprofile doctor                  # Check environment and ccprofile state for problems
 ```
 
 ## Context

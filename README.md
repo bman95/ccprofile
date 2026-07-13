@@ -75,6 +75,7 @@ ccprofile reset
 | `ccprofile delete <name>` | Delete a profile |
 | `ccprofile reset` | Restore the original environment, clear active profile |
 | `ccprofile stats` | Show per-item token cost and per-profile savings |
+| `ccprofile doctor` | Check the environment and ccprofile state for problems |
 | `ccprofile add <profile> plugin <name> [--enable\|--disable]` | Add plugin toggle |
 | `ccprofile add <profile> <skill\|agent\|command> <name>` | Add skill/agent/command to profile |
 | `ccprofile add <profile> mcp <name> [--enable\|--disable]` | Add MCP server toggle |
@@ -127,7 +128,7 @@ inside that tree:
 ```bash
 ccprofile bind docs ~/work/docs-repo
 cd ~/work/docs-repo/src
-ccprofile auto          # activates "docs" (no-op if already active)
+ccprofile auto          # activates "docs" (re-syncs if drifted, no-op if in sync)
 ```
 
 `auto` applies plugin/MCP changes to the **global** `~/.claude/settings.json`
@@ -156,6 +157,19 @@ effect on the *next* session):
 
 Bindings are stored in `~/.claude/profiles/.bindings.json`.
 
+## Profile schema
+
+Profiles are JSON files with a `version` field (currently `2`). For the
+`skills`, `agents`, and `commands` lists:
+
+- **absent key** — leave that kind untouched when the profile is applied;
+- **empty list `[]`** — disable everything of that kind (except protected
+  items like the companion skill);
+- **non-empty list** — keep exactly those items active.
+
+Legacy profiles written before v0.4.0 (no `version` field) used `[]` to mean
+"untouched"; they are normalized on load so their behavior does not change.
+
 ## Sharing profiles
 
 Profiles are plain JSON, so you can version them or share them with your team:
@@ -168,18 +182,22 @@ curl -s https://example.com/team-docs.json | ccprofile import -
 
 ## How it works
 
-When you run `ccprofile use <name>`:
+Activation is **declarative**: the desired environment is computed as *your
+original baseline overlaid with the profile*, so what you get is a pure
+function of those two things — never of which profiles happened to be active
+in between. When you run `ccprofile use <name>`:
 
 1. **Skills**: Skills listed in the profile stay in `~/.claude/skills/`. All others are moved to `~/.claude/skills-disabled/`. The companion `ccprofile` skill is always kept active so `/profile-edit` never disappears.
-2. **Agents & slash commands**: Same keep-list mechanism, using `~/.claude/agents[-disabled]/` and `~/.claude/commands[-disabled]/`. A profile that declares no agents (or commands) leaves that kind untouched.
-3. **Plugins**: Toggles `enabledPlugins` booleans in `~/.claude/settings.json`.
-4. **MCP servers**: Updates `enabledMcpjsonServers` / `disabledMcpjsonServers` in settings.
+2. **Agents & slash commands**: Same keep-list mechanism, using `~/.claude/agents[-disabled]/` and `~/.claude/commands[-disabled]/`. A profile with **no** list for a kind leaves that kind untouched; an **empty** list (`[]`) disables everything of that kind (except protected items).
+3. **Plugins**: Sets `enabledPlugins` booleans in `~/.claude/settings.json` to the baseline values overlaid with the profile's toggles. Switching from profile A to profile B **reverts A's toggles** — they don't accumulate.
+4. **MCP servers**: Same overlay semantics for `enabledMcpjsonServers` / `disabledMcpjsonServers`.
 
 The first time you activate a profile from a clean state, ccprofile records a
 **baseline snapshot** of your skills, agents, commands, plugins, and MCP
 settings in `~/.claude/profiles/.baseline.json`. `ccprofile reset` restores
-that exact baseline — so deactivating is fully reversible, even for plugins and
-MCP servers a profile turned off. Switching directly between profiles preserves
+the baseline, touching **only what it recorded**: a skill you install or a
+plugin you enable *while* a profile is active is unknown to the baseline and
+is left exactly as you set it. Switching directly between profiles preserves
 the original baseline.
 
 The baseline captures **one** settings file — either the global
@@ -213,8 +231,9 @@ After running `ccprofile init`, a `/profile-edit` slash command becomes availabl
 
 - **Changes require a Claude Code restart.** Skills and plugins are loaded at session start, not mid-session.
 - **Backups**: Before modifying `settings.json`, a timestamped backup is created automatically (keeps the 5 most recent).
-- **Safe writes**: Uses atomic file writes to prevent corruption from concurrent access.
-- **Non-destructive**: `ccprofile reset` restores the baseline captured before your first activation — skills, plugin toggles, and MCP server lists all return to their original state. The baseline tracks a single settings file, so activating against a different target (global vs. `--project`) while a profile is active is refused until you `reset`.
+- **Safe writes**: Uses atomic file writes, and activations are serialized through a lock file (`~/.claude/profiles/.lock`) so a `SessionStart` hook racing a manual command cannot interleave file moves. Stale locks from crashed runs are reclaimed automatically.
+- **Non-destructive**: `ccprofile reset` restores the baseline captured before your first activation — skills, plugin toggles, and MCP server lists all return to their original state, while anything you installed or toggled *after* activation is left alone. The baseline tracks a single settings file, so activating against a different target (global vs. `--project`) while a profile is active is refused until you `reset`.
+- **Health checks**: `ccprofile doctor` verifies the directories, settings files, profiles, bindings, baseline/marker consistency, and lock state, and flags items that exist in both an active and a disabled directory.
 
 ## Use from within Claude Code
 
@@ -241,17 +260,16 @@ The optional `/profile-edit` companion skill exists only for when you want AI he
   changes how these are loaded or stored, ccprofile can silently stop having any
   effect until it is updated to match. It is not affiliated with Anthropic.
 - **Token estimates are approximate.** `ccprofile stats` estimates idle cost
-  from a `~4 chars/token` heuristic over each item's frontmatter, and it only
-  parses single-line `key: value` frontmatter — folded or multi-line
-  descriptions are undercounted. Context contributed by plugins and MCP servers
-  is **not** counted at all. Treat the numbers as relative guidance for deciding
-  what to disable, not as an exact accounting of your context window.
+  from a `~4 chars/token` heuristic over each item's frontmatter name and
+  description (including YAML block scalars like `description: >`). Context
+  contributed by plugins and MCP servers is **not** counted at all — and it is
+  often the largest share, since MCP tool schemas are only known at runtime.
+  Treat the numbers as relative guidance for deciding what to disable, not as
+  an exact accounting of your context window.
 - **Changes apply on the next session.** Skills and plugins are loaded at
   session start, so any switch takes effect only after you restart Claude Code.
-- **No concurrency locking.** Running two ccprofile commands at once (for
-  example a `SessionStart` hook racing a manual invocation) can interleave file
-  moves. It surfaces "exists in both" warnings when it detects this, but does
-  not prevent it; avoid running overlapping activations.
+  This also means a switch triggered by a `SessionStart` hook is always one
+  session behind.
 
 ## License
 
