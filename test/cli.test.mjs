@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -293,11 +293,12 @@ test("use --project applies and reset restores project settings", () => {
   assert.equal(projSettings().enabledPlugins["p@x"], true, "project settings restored by reset");
 });
 
-test("snapshot omits kinds with no active items", () => {
+test("snapshot records empty kinds explicitly (v2: [] round-trips as 'none')", () => {
   rmSync(join(claudeDir, "agents"), { recursive: true, force: true });
   run(["snapshot", "snap"]);
   const show = JSON.parse(run(["show", "snap", "--json"]).stdout);
-  assert.equal(show.agents, undefined, "empty kind omitted instead of recorded as []");
+  assert.deepEqual(show.agents, [], "empty kind recorded as [] so the exact state round-trips");
+  assert.equal(show.version, 2, "snapshot uses profile schema v2");
   assert.ok(show.skills.length > 0);
 });
 
@@ -407,4 +408,203 @@ test("reset --dry-run uses 'would' phrasing and writes nothing", () => {
   assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")), "docx still disabled (dry-run)");
   assert.ok(existsSync(baselineFile), "baseline untouched by dry-run");
   assert.match(run(["current"]).stdout, /Active profile: docs/);
+});
+
+test("switching profiles reverts the previous profile's plugin and MCP toggles", () => {
+  writeFileSync(
+    join(claudeDir, "settings.json"),
+    JSON.stringify({
+      enabledPlugins: { "plugX@m": true, "plugY@m": true },
+      enabledMcpjsonServers: ["srv1"],
+    }, null, 2)
+  );
+  run(["create", "a"]);
+  run(["add", "a", "skill", "pdf"]);
+  run(["add", "a", "plugin", "plugX@m", "--disable"]);
+  run(["add", "a", "mcp", "srv1", "--disable"]);
+  run(["add", "a", "plugin", "introduced@m"]); // key that did not exist at baseline
+  run(["create", "b"]);
+  run(["add", "b", "skill", "docx"]);
+
+  run(["use", "a"]);
+  let s = readSettings();
+  assert.equal(s.enabledPlugins["plugX@m"], false, "a disables plugX");
+  assert.equal(s.enabledPlugins["introduced@m"], true, "a introduces a new key");
+  assert.deepEqual(s.disabledMcpjsonServers, ["srv1"], "a disables srv1");
+
+  run(["use", "b"]); // b says nothing about plugins or MCP
+  s = readSettings();
+  assert.equal(s.enabledPlugins["plugX@m"], true, "switching to b reverts a's toggle to baseline");
+  assert.equal("introduced@m" in s.enabledPlugins, false, "a's introduced key is removed");
+  assert.deepEqual(s.enabledMcpjsonServers, ["srv1"], "srv1 back to enabled under b");
+  assert.equal(s.disabledMcpjsonServers, undefined, "no leftover disabled list");
+});
+
+test("reset leaves items and plugins that appeared after activation untouched", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  run(["use", "docs"]);
+
+  // While the profile is active, the user installs a new skill and a new plugin.
+  makeSkill(join(claudeDir, "skills"), "newskill", { description: "installed later" });
+  const s = readSettings();
+  s.enabledPlugins["brand-new@m"] = true;
+  writeFileSync(join(claudeDir, "settings.json"), JSON.stringify(s, null, 2));
+
+  run(["reset"]);
+
+  assert.ok(existsSync(join(claudeDir, "skills", "newskill")), "new skill stays active after reset");
+  assert.ok(!existsSync(join(claudeDir, "skills-disabled", "newskill")), "new skill not disabled");
+  assert.equal(readSettings().enabledPlugins["brand-new@m"], true, "unknown plugin key untouched");
+  assert.equal(readSettings().enabledPlugins["frontend-design@x"], true, "baseline value restored");
+});
+
+test("an empty skills list (schema v2) disables everything except the companion", () => {
+  run(["import", "-"], { input: '{"name":"barebones","version":2,"skills":[]}' });
+  run(["use", "barebones"]);
+  assert.ok(existsSync(join(claudeDir, "skills", "ccprofile")), "protected companion stays");
+  for (const s of ["pdf", "docx", "playwright"]) {
+    assert.ok(existsSync(join(claudeDir, "skills-disabled", s)), `${s} disabled by []`);
+  }
+});
+
+test("legacy profiles (no version) treat empty lists as untouched", () => {
+  mkdirSync(join(claudeDir, "profiles"), { recursive: true });
+  writeFileSync(
+    join(claudeDir, "profiles", "legacy.json"),
+    JSON.stringify({ name: "legacy", skills: [], plugins: {}, mcpServers: {} }, null, 2)
+  );
+  run(["use", "legacy"]);
+  for (const s of ["pdf", "docx", "playwright"]) {
+    assert.ok(existsSync(join(claudeDir, "skills", s)), `${s} untouched by legacy []`);
+  }
+});
+
+test("a live lock blocks activation; a stale lock is reclaimed", () => {
+  run(["create", "docs"]);
+  run(["add", "docs", "skill", "pdf"]);
+  mkdirSync(join(claudeDir, "profiles"), { recursive: true });
+  const lockFile = join(claudeDir, "profiles", ".lock");
+
+  // Live lock: this test process's own PID is definitely alive.
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  const blocked = run(["use", "docs"], { allowFail: true });
+  assert.equal(blocked.code, 1);
+  assert.match(blocked.stderr, /appears to be mid-activation/);
+  assert.ok(!existsSync(join(claudeDir, "skills-disabled", "docx")), "nothing moved while locked");
+
+  // Stale lock: dead PID is reclaimed and the activation proceeds.
+  writeFileSync(lockFile, JSON.stringify({ pid: 99999999, at: new Date().toISOString() }));
+  run(["use", "docs"]);
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")), "stale lock reclaimed");
+  assert.ok(!existsSync(lockFile), "lock released after the run");
+});
+
+test("auto re-syncs drift even when the marker says the profile is active", () => {
+  run(["create", "work"]);
+  run(["add", "work", "skill", "pdf"]);
+  const repo = join(HOME, "myrepo");
+  mkdirSync(repo, { recursive: true });
+  run(["bind", "work", repo]);
+  run(["auto"], { cwd: repo });
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")));
+
+  // Drift: someone manually re-enables docx while the marker still says "work".
+  renameSync(join(claudeDir, "skills-disabled", "docx"), join(claudeDir, "skills", "docx"));
+
+  const res = run(["auto"], { cwd: repo });
+  assert.match(res.stdout, /Skill disabled: docx/, "auto reconciled the drift");
+  assert.ok(existsSync(join(claudeDir, "skills-disabled", "docx")), "docx re-disabled");
+
+  // In-sync invocation still reports already active.
+  assert.match(run(["auto"], { cwd: repo }).stdout, /already active/);
+});
+
+test("control characters from imported profiles are stripped from output", () => {
+  const evil = JSON.stringify({ name: "evil", description: "\u001b[31mred\u0007bell" });
+  run(["import", "-"], { input: evil });
+  run(["use", "evil"]);
+  const cur = run(["current"]).stdout;
+  assert.ok(!cur.includes("\u001b"), "no ESC byte in output");
+  assert.ok(!cur.includes("\u0007"), "no BEL byte in output");
+  assert.match(cur, /redbell/, "printable content preserved");
+});
+
+test("flags on the wrong command are rejected", () => {
+  run(["create", "docs"]);
+  const res = run(["list", "--force"], { allowFail: true });
+  assert.equal(res.code, 1);
+  assert.match(res.stderr, /not supported by "ccprofile list"/);
+
+  const res2 = run(["use", "docs", "--enable"], { allowFail: true });
+  assert.equal(res2.code, 1);
+  assert.match(res2.stderr, /not supported by "ccprofile use"/);
+});
+
+test("import strips unknown fields", () => {
+  const input = JSON.stringify({ name: "clean", skills: ["pdf"], sneaky: { huge: "payload" } });
+  run(["import", "-"], { input });
+  const show = JSON.parse(run(["show", "clean", "--json"]).stdout);
+  assert.equal(show.sneaky, undefined, "unknown field not persisted");
+  assert.deepEqual(show.skills, ["pdf"]);
+});
+
+test("add warns when the item is not installed but keeps it", () => {
+  run(["create", "docs"]);
+  const res = run(["add", "docs", "skill", "pfd"]); // typo for pdf
+  assert.match(res.stdout, /no skill named "pfd" is currently installed/);
+  const show = JSON.parse(run(["show", "docs", "--json"]).stdout);
+  assert.deepEqual(show.skills, ["pfd"], "item kept for forward-compat");
+});
+
+test("mutating commands support --json", () => {
+  const created = JSON.parse(run(["create", "docs", "Doc work", "--json"]).stdout);
+  assert.equal(created.ok, true);
+  assert.equal(created.created, "docs");
+  const added = JSON.parse(run(["add", "docs", "skill", "pdf", "--json"]).stdout);
+  assert.equal(added.ok, true);
+  const deleted = JSON.parse(run(["delete", "docs", "--json"]).stdout);
+  assert.equal(deleted.ok, true);
+});
+
+test("doctor reports a healthy setup and fails on corrupt settings", () => {
+  run(["create", "docs"]);
+  const healthy = run(["doctor"]);
+  assert.match(healthy.stdout, /\[ok\]/);
+  assert.doesNotMatch(healthy.stdout, /\[FAIL\]/);
+
+  writeFileSync(join(claudeDir, "settings.json"), "{ not json ]");
+  const sick = run(["doctor"], { allowFail: true });
+  assert.equal(sick.code, 1);
+  assert.match(sick.stdout, /\[FAIL\]/);
+  assert.match(sick.stdout, /invalid JSON/i);
+});
+
+test("doctor flags active/disabled collisions and dangling bindings", () => {
+  run(["create", "docs"]);
+  run(["bind", "docs", join(HOME, "nonexistent-dir")]);
+  // Create a collision: pdf present in both dirs.
+  makeSkill(join(claudeDir, "skills-disabled"), "pdf", { description: "duplicate copy" });
+  const res = run(["doctor"]);
+  assert.match(res.stdout, /BOTH/, "collision reported");
+  assert.match(res.stdout, /directory that does not exist/, "dangling binding reported");
+});
+
+test("multi-line block-scalar descriptions are counted in token estimates", () => {
+  const skillDir = join(claudeDir, "skills", "verbose");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, "SKILL.md"), [
+    "---",
+    "name: verbose",
+    "description: >",
+    "  This is a long folded description that spans",
+    "  several lines and used to be silently dropped",
+    "  by the single-line frontmatter parser entirely.",
+    "---",
+    "Body.",
+  ].join("\n"));
+  const stats = JSON.parse(run(["stats", "--json"]).stdout);
+  const verbose = stats.items.find((s) => s.name === "verbose");
+  assert.ok(verbose.idleTokens > 20, `block scalar counted (got ${verbose.idleTokens})`);
+  assert.match(verbose.description, /folded description/);
 });

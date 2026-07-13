@@ -1,6 +1,6 @@
 {
   "name": "ccprofile",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Profile manager for Claude Code — toggle groups of skills, agents, slash commands, plugins, and MCP servers to optimize your context window",
   "type": "module",
   "bin": {

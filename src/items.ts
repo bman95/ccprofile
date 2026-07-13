@@ -162,3 +162,59 @@ export async function syncItems(
 
   return changes;
 }
+
+/**
+ * Restore a kind to a recorded baseline, touching ONLY items the baseline
+ * mentions: items recorded active are re-enabled, items recorded disabled are
+ * re-disabled, and anything the baseline never saw (e.g. a skill installed
+ * while a profile was active) is left exactly where it is.
+ */
+export async function restoreItems(
+  spec: KindSpec,
+  activeNames: string[],
+  disabledNames: string[] | undefined,
+  dryRun?: boolean
+): Promise<string[]> {
+  const changes: string[] = [];
+  const activeSet = new Set(activeNames);
+  const disabledSet = new Set((disabledNames ?? []).filter((n) => !activeSet.has(n)));
+
+  const active = await listEntries(spec.activeDir, spec.dirsOnly);
+  const disabled = await listEntries(spec.disabledDir, spec.dirsOnly);
+
+  for (const e of disabled) {
+    if (activeSet.has(e.name)) {
+      const to = join(spec.activeDir, e.base);
+      if (!existsSync(to)) {
+        if (!dryRun) {
+          if (!existsSync(spec.activeDir)) await mkdir(spec.activeDir, { recursive: true });
+          await moveDir(join(spec.disabledDir, e.base), to);
+        }
+        changes.push(`${spec.label} enabled: ${e.name}`);
+      } else {
+        changes.push(
+          `Warning: ${spec.kind} "${e.name}" exists in both ${spec.activeDir} and ${spec.disabledDir}; left in place`
+        );
+      }
+    }
+  }
+
+  for (const e of active) {
+    if (disabledSet.has(e.name)) {
+      const to = join(spec.disabledDir, e.base);
+      if (!existsSync(to)) {
+        if (!dryRun) {
+          if (!existsSync(spec.disabledDir)) await mkdir(spec.disabledDir, { recursive: true });
+          await moveDir(join(spec.activeDir, e.base), to);
+        }
+        changes.push(`${spec.label} disabled: ${e.name}`);
+      } else {
+        changes.push(
+          `Warning: ${spec.kind} "${e.name}" exists in both ${spec.activeDir} and ${spec.disabledDir}; left active`
+        );
+      }
+    }
+  }
+
+  return changes;
+}

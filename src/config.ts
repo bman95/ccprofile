@@ -1,7 +1,8 @@
-import { readFile, writeFile as fsWriteFile, copyFile, mkdir } from "node:fs/promises";
+import { readFile, copyFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import writeFileAtomic from "write-file-atomic";
+import { CliError } from "./errors.js";
 
 export async function readJson<T = Record<string, unknown>>(
   filePath: string
@@ -21,7 +22,7 @@ export async function readJson<T = Record<string, unknown>>(
     // The file exists but is unparseable. Returning {} here would let a later
     // write silently overwrite the user's real (hand-corrupted) settings, so
     // abort loudly instead and point at the automatic backups.
-    throw new Error(
+    throw new CliError(
       `Cannot parse ${filePath}: the file exists but contains invalid JSON. ` +
         `Fix it by hand or restore a ".bak" backup from the same directory, then retry.`
     );
@@ -54,14 +55,16 @@ export async function writeJsonSafe(
 async function pruneBackups(filePath: string): Promise<void> {
   const { readdir, unlink } = await import("node:fs/promises");
   const dir = dirname(filePath);
-  const base = filePath.split("/").pop()!;
+  // basename(), not split("/"): Windows paths use backslashes, and the old
+  // split made pruning silently never match there (backups grew forever).
+  const base = basename(filePath);
   const pattern = new RegExp(`^${escapeRegex(base)}\\.\\d{4}-.*\\.bak$`);
 
   const entries = await readdir(dir);
   const backups = entries.filter((e) => pattern.test(e)).sort().reverse();
 
   for (const old of backups.slice(5)) {
-    await unlink(`${dir}/${old}`).catch(() => {});
+    await unlink(join(dir, old)).catch(() => {});
   }
 }
 

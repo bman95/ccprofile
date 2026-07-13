@@ -40,10 +40,13 @@ export async function runInit(): Promise<void> {
     console.log("  [ok] Skills-disabled directory exists");
   }
 
-  // 4. Install companion skill
+  // 4. Install companion skill (never clobber an existing copy the user may
+  // have customized; delete the directory and re-run init to refresh it).
   const skillDest = join(paths.skillsDir, "ccprofile");
-  if (existsSync(BUNDLED_SKILL_DIR)) {
-    await cp(BUNDLED_SKILL_DIR, skillDest, { recursive: true, force: true });
+  if (existsSync(skillDest)) {
+    console.log("  [ok] /profile-edit skill already installed (left untouched)");
+  } else if (existsSync(BUNDLED_SKILL_DIR)) {
+    await cp(BUNDLED_SKILL_DIR, skillDest, { recursive: true });
     console.log("  [ok] Installed /profile-edit skill to ~/.claude/skills/ccprofile/");
   } else {
     console.log("  [warn] Bundled skill not found — skipping skill installation");

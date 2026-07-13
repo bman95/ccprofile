@@ -39,12 +39,13 @@ export async function computeStats(): Promise<Stats> {
     const map = new Map(byKind(kind).map((i) => [i.name, i.idleTokens]));
     return kept.reduce((sum, n) => sum + (map.get(n) ?? 0), 0);
   };
-  // A profile with an empty/absent list leaves that kind untouched at apply
-  // time. We approximate "untouched" as "every known item stays enabled";
-  // actual savings depend on what happens to be disabled when it's applied.
+  // A profile with an absent list leaves that kind untouched at apply time.
+  // We approximate "untouched" as "every known item stays enabled"; actual
+  // savings depend on what happens to be disabled when it's applied. A
+  // declared list (including []) keeps exactly those items plus protected ones.
   const keptOf = (kind: SkillInfo["kind"], declared: string[] | undefined, extra: string[] = []) => {
     const all = byKind(kind).map((i) => i.name);
-    if (!declared || declared.length === 0) return all.sort();
+    if (declared === undefined) return all.sort();
     const allSet = new Set(all);
     return [...new Set([...declared, ...extra])].filter((n) => allSet.has(n)).sort();
   };

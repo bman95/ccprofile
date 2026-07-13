@@ -28,25 +28,34 @@ export function estimateTokens(text: string): number {
 
 /**
  * Extract the YAML frontmatter block (between the first pair of `---` lines).
- * Only single-line `key: value` pairs are parsed; folded/multi-line YAML
- * values are ignored, which slightly undercounts the token estimate.
+ * Parses `key: value` pairs including YAML block scalars (`description: >`
+ * followed by indented lines), which real skills commonly use for long
+ * descriptions — those used to be silently dropped, undercounting tokens.
+ * Arbitrary nested YAML is still out of scope.
  */
 export function parseFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return {};
   const out: Record<string, string> = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (kv) {
-      let value = kv[2].trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const kv = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!kv) continue;
+    let value = kv[2].trim();
+    if (/^[>|][+-]?$/.test(value)) {
+      // Block scalar: consume the following more-indented (or blank) lines.
+      const parts: string[] = [];
+      while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]) || lines[i + 1].trim() === "")) {
+        parts.push(lines[++i].trim());
       }
-      out[kv[1]] = value;
+      value = parts.join(" ").trim();
+    } else if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
     }
+    out[kv[1]] = value;
   }
   return out;
 }
