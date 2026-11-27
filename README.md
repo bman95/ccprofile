@@ -12,8 +12,13 @@ Claude Code loads **all** registered skills, agents, slash commands, plugins, an
 
 ## Install
 
+Requires Node.js 18+. Not yet published to npm — install from source:
+
 ```bash
-npm install -g ccprofile
+git clone https://github.com/bman95/ccprofile.git
+cd ccprofile
+npm install        # also builds the CLI
+npm install -g .
 ccprofile init
 ```
 
